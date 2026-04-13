@@ -1,0 +1,207 @@
+{
+  "info": {
+    "name": "Sparient Backend Engine",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl",          "value": "http://localhost:3000" },
+    { "key": "connectivoApiKey", "value": "your-connectivo-api-key-here" },
+    { "key": "canvasDomain",     "value": "your-institution.instructure.com" },
+    { "key": "canvasApiToken",   "value": "your-canvas-api-token" },
+    { "key": "canvasAccountId",  "value": "1" },
+    { "key": "institutionId",    "value": "" },
+    { "key": "courseId",         "value": "" },
+    { "key": "batchId",          "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Canvas API (Direct)",
+      "description": "Test Canvas API directly — bypasses our engine. Useful for verifying credentials and exploring data before running a sync.",
+      "item": [
+        {
+          "name": "List courses in account",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
+            ],
+            "url": {
+              "raw": "https://{{canvasDomain}}/api/v1/accounts/{{canvasAccountId}}/courses?state[]=available&enrollment_type=teacher&per_page=10",
+              "host": ["https://{{canvasDomain}}"],
+              "path": ["api", "v1", "accounts", "{{canvasAccountId}}", "courses"],
+              "query": [
+                { "key": "state[]",          "value": "available" },
+                { "key": "enrollment_type",  "value": "teacher" },
+                { "key": "per_page",         "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List files in a course",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
+            ],
+            "url": {
+              "raw": "https://{{canvasDomain}}/api/v1/courses/{{courseId}}/files?sort=updated_at&order=desc&per_page=20&content_types[]=application/pdf&content_types[]=application/vnd.openxmlformats-officedocument.wordprocessingml.document&content_types[]=application/vnd.openxmlformats-officedocument.presentationml.presentation&content_types[]=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "host": ["https://{{canvasDomain}}"],
+              "path": ["api", "v1", "courses", "{{courseId}}", "files"],
+              "query": [
+                { "key": "sort",             "value": "updated_at" },
+                { "key": "order",            "value": "desc" },
+                { "key": "per_page",         "value": "20" },
+                { "key": "content_types[]",  "value": "application/pdf" },
+                { "key": "content_types[]",  "value": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+                { "key": "content_types[]",  "value": "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+                { "key": "content_types[]",  "value": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get a single file",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
+            ],
+            "url": {
+              "raw": "https://{{canvasDomain}}/api/v1/courses/{{courseId}}/files/:fileId",
+              "host": ["https://{{canvasDomain}}"],
+              "path": ["api", "v1", "courses", "{{courseId}}", "files", ":fileId"],
+              "variable": [{ "key": "fileId", "value": "" }]
+            }
+          }
+        },
+        {
+          "name": "List enrollment terms for account",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
+            ],
+            "url": {
+              "raw": "https://{{canvasDomain}}/api/v1/accounts/{{canvasAccountId}}/terms",
+              "host": ["https://{{canvasDomain}}"],
+              "path": ["api", "v1", "accounts", "{{canvasAccountId}}", "terms"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sync (Internal)",
+      "description": "Trigger syncs manually — no auth required (internal network only in prod).",
+      "item": [
+        {
+          "name": "Trigger full institution sync",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}"
+          }
+        },
+        {
+          "name": "Trigger single course sync",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}/courses/{{courseId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batches (Internal)",
+      "item": [
+        {
+          "name": "Get batch by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/batches/{{batchId}}"
+          }
+        },
+        {
+          "name": "Get files in a batch",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/batches/{{batchId}}/files"
+          }
+        },
+        {
+          "name": "List batches for institution",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/batches/institutions/{{institutionId}}?status=pending",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "batches", "institutions", "{{institutionId}}"],
+              "query": [
+                { "key": "status",   "value": "pending",  "disabled": true },
+                { "key": "courseId", "value": "{{courseId}}", "disabled": true }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Connectivo (Authenticated)",
+      "description": "Simulates what Connectivo calls. Requires X-API-Key header.",
+      "item": [
+        {
+          "name": "List pending batches",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-API-Key", "value": "{{connectivoApiKey}}" }
+            ],
+            "url": "{{baseUrl}}/api/v1/connectivo/batches"
+          }
+        },
+        {
+          "name": "Acknowledge batch",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-API-Key",     "value": "{{connectivoApiKey}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"connectivo_batch_id\": \"conn-batch-uuid-test-123\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/connectivo/batches/{{batchId}}/acknowledge"
+          }
+        },
+        {
+          "name": "Submit batch results",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-API-Key",     "value": "{{connectivoApiKey}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"batch\": {\n    \"id\": \"conn-batch-uuid-test-123\",\n    \"external_batch_id\": \"{{batchId}}\",\n    \"state\": \"Completed\",\n    \"started_at\": \"2026-04-13T02:01:00.000Z\",\n    \"completed_at\": \"2026-04-13T02:14:37.000Z\",\n    \"summary\": {\n      \"total_files\": 1,\n      \"total_pages\": 24,\n      \"succeeded\": 1,\n      \"failed\": 0,\n      \"requires_review\": 0,\n      \"total_issues_found\": 6,\n      \"total_issues_fixed\": 6\n    }\n  },\n  \"folders\": [\n    {\n      \"path\": \"institution-slug/courses/112233/files\",\n      \"files\": [\n        {\n          \"file_id\": \"REPLACE_WITH_SOURCE_FILE_ID\",\n          \"file_name\": \"lecture-1.pdf\",\n          \"state\": \"Completed\",\n          \"quality_label\": \"AA\",\n          \"remediated_path\": \"institution-slug/courses/112233/files/987001/lecture-1.pdf\",\n          \"total_pages\": 24,\n          \"processing_time_seconds\": 38,\n          \"verapdf_errors\": 0,\n          \"verapdf_warnings\": 2,\n          \"issues_by_category\": {\n            \"headings\": { \"found\": 3, \"fixed\": 3, \"remaining\": 0 },\n            \"alt_text\":  { \"found\": 2, \"fixed\": 2, \"remaining\": 0 },\n            \"contrast\":  { \"found\": 1, \"fixed\": 1, \"remaining\": 0 }\n          },\n          \"error\": null\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/connectivo/batches/{{batchId}}/results"
+          }
+        }
+      ]
+    }
+  ]
+}

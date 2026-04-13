@@ -1,0 +1,194 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum SourceType {
+  canvas
+  sharepoint
+}
+
+enum FileStatus {
+  pending
+  uploading_to_s3
+  ready
+  processing
+  completed
+  completed_with_warnings
+  failed
+  permanently_failed
+  deleted_from_source
+}
+
+enum BatchStatus {
+  pending
+  processing
+  completed
+  completed_with_warnings
+  failed
+  cancelled
+}
+
+enum QualityLabel {
+  A
+  AA
+  AAA
+}
+
+enum ConnectivoFileState {
+  completed
+  completed_with_warnings
+  failed
+}
+
+model Institution {
+  id               String     @id @default(uuid())
+  name             String     @db.VarChar(255)
+  slug             String     @unique @db.VarChar(100)
+  sourceType       SourceType @map("source_type")
+  credentials      Json
+  writebackOptIn   Boolean    @default(false) @map("writeback_opt_in")
+  syncEnabled      Boolean    @default(true) @map("sync_enabled")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  courses Course[]
+  batches Batch[]
+
+  @@map("institutions")
+}
+
+model Course {
+  id               String    @id @default(uuid())
+  institutionId    String    @map("institution_id")
+  canvasCourseId   String    @map("canvas_course_id") @db.VarChar(100)
+  canvasTermId     String?   @map("canvas_term_id") @db.VarChar(100)
+  name             String    @db.VarChar(255)
+  courseCode       String?   @map("course_code") @db.VarChar(100)
+  writebackOptIn   Boolean?  @map("writeback_opt_in")
+  syncEnabled      Boolean   @default(true) @map("sync_enabled")
+  lastSyncedAt     DateTime? @map("last_synced_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  sourceFiles SourceFile[]
+  batches     Batch[]
+
+  @@unique([institutionId, canvasCourseId])
+  @@index([institutionId])
+  @@map("courses")
+}
+
+model SourceFile {
+  id                       String     @id @default(uuid())
+  courseId                 String     @map("course_id")
+  canvasFileId             String     @map("canvas_file_id") @db.VarChar(100)
+  displayName              String     @map("display_name") @db.VarChar(500)
+  fileName                 String     @map("file_name") @db.VarChar(500)
+  mimeType                 String     @map("mime_type") @db.VarChar(100)
+  sizeBytes                BigInt?    @map("size_bytes")
+  canvasModifiedAt         DateTime   @map("canvas_modified_at")
+  lastWritebackModifiedAt  DateTime?  @map("last_writeback_modified_at")
+  s3SourceKey              String?    @map("s3_source_key") @db.VarChar(1000)
+  s3SourceBucket           String?    @map("s3_source_bucket") @db.VarChar(255)
+  status                   FileStatus @default(pending)
+  pendingResubmit          Boolean    @default(false) @map("pending_resubmit")
+  retryCount               Int        @default(0) @map("retry_count")
+  maxRetries               Int        @default(3) @map("max_retries")
+  nextRetryAt              DateTime?  @map("next_retry_at")
+  lastFailureReason        String?    @map("last_failure_reason")
+  createdAt                DateTime   @default(now()) @map("created_at")
+  updatedAt                DateTime   @updatedAt @map("updated_at")
+
+  course     Course      @relation(fields: [courseId], references: [id])
+  batchFiles BatchFile[]
+
+  @@unique([courseId, canvasFileId])
+  @@index([courseId])
+  @@index([status])
+  @@map("source_files")
+}
+
+model Batch {
+  id                String      @id @default(uuid())
+  institutionId     String      @map("institution_id")
+  courseId          String      @map("course_id")
+  connectivoBatchId String?     @map("connectivo_batch_id") @db.VarChar(255)
+  status            BatchStatus @default(pending)
+  isInitialSync     Boolean     @default(false) @map("is_initial_sync")
+  isRetry           Boolean     @default(false) @map("is_retry")
+  acknowledgedAt    DateTime?   @map("acknowledged_at")
+  completedAt       DateTime?   @map("completed_at")
+  totalFiles        Int         @default(0) @map("total_files")
+  totalPages        Int?        @map("total_pages")
+  succeeded         Int?
+  failed            Int?
+  requiresReview    Int?        @map("requires_review")
+  totalIssuesFound  Int?        @map("total_issues_found")
+  totalIssuesFixed  Int?        @map("total_issues_fixed")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  course      Course      @relation(fields: [courseId], references: [id])
+  batchFiles  BatchFile[]
+
+  @@index([institutionId])
+  @@index([courseId])
+  @@index([status])
+  @@map("batches")
+}
+
+model BatchFile {
+  id                    String              @id @default(uuid())
+  batchId               String              @map("batch_id")
+  sourceFileId          String              @map("source_file_id")
+  connectivoState       ConnectivoFileState? @map("connectivo_state")
+  qualityLabel          QualityLabel?       @map("quality_label")
+  remediatedS3Key       String?             @map("remediated_s3_key") @db.VarChar(1000)
+  remediatedS3Bucket    String?             @map("remediated_s3_bucket") @db.VarChar(255)
+  totalPages            Int?                @map("total_pages")
+  processingTimeSecs    Int?                @map("processing_time_seconds")
+  verapdfErrors         Int?                @map("verapdf_errors")
+  verapdfWarnings       Int?                @map("verapdf_warnings")
+  errorMessage          String?             @map("error_message")
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+
+  batch           Batch               @relation(fields: [batchId], references: [id])
+  sourceFile      SourceFile          @relation(fields: [sourceFileId], references: [id])
+  issueCategories FileIssueCategory[]
+
+  @@index([batchId])
+  @@index([sourceFileId])
+  @@map("batch_files")
+}
+
+model FileIssueCategory {
+  id          String @id @default(uuid())
+  batchFileId String @map("batch_file_id")
+  category    String @db.VarChar(100)
+  found       Int    @default(0)
+  fixed       Int    @default(0)
+  remaining   Int    @default(0)
+
+  batchFile BatchFile @relation(fields: [batchFileId], references: [id])
+
+  @@map("file_issue_categories")
+}
+
+model ConnectivoApiKey {
+  id         String    @id @default(uuid())
+  name       String    @db.VarChar(255)
+  keyHash    String    @unique @map("key_hash") @db.VarChar(255)
+  isActive   Boolean   @default(true) @map("is_active")
+  lastUsedAt DateTime? @map("last_used_at")
+  expiresAt  DateTime? @map("expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@map("connectivo_api_keys")
+}
