@@ -43,7 +43,7 @@ export class RetryService {
         // Reset status so BatchBuilder transitions them correctly
         await prisma.sourceFile.updateMany({
           where: { id: { in: files.map((f) => f.id) } },
-          data: { status: 'ready', nextRetryAt: null },
+          data: { status: 'uploaded_to_s3', nextRetryAt: null },
         });
 
         await this.batchBuilder.createBatch(institution, course, files, { isRetry: true });

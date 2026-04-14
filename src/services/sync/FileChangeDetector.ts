@@ -4,7 +4,7 @@ import prisma from '../../db/client';
 import { logger } from '../../utils/logger';
 
 // Statuses in which a re-upload should be queued but processing must not be interrupted
-const IN_FLIGHT_STATUSES: FileStatus[] = ['processing'];
+const IN_FLIGHT_STATUSES: FileStatus[] = ['batched'];
 
 // Statuses from which we never auto-retry (operator must intervene)
 const TERMINAL_STATUSES: FileStatus[] = ['permanently_failed'];
@@ -45,7 +45,7 @@ export class FileChangeDetector {
           },
         });
         toUpload.push(discovered);
-        logger.debug('FileChangeDetector: new file', { externalId: discovered.externalId });
+        logger.info('FileChangeDetector: new file queued', { externalId: discovered.externalId });
         continue;
       }
 
@@ -54,7 +54,7 @@ export class FileChangeDetector {
         existing.lastWritebackModifiedAt &&
         discovered.modifiedAt.getTime() === existing.lastWritebackModifiedAt.getTime()
       ) {
-        logger.debug('FileChangeDetector: skipping own writeback', {
+        logger.info('FileChangeDetector: skipping own writeback', {
           externalId: discovered.externalId,
         });
         continue;
@@ -62,6 +62,12 @@ export class FileChangeDetector {
 
       // No content change
       if (discovered.modifiedAt <= existing.canvasModifiedAt) {
+        logger.info('FileChangeDetector: unchanged, skipping', {
+          externalId: discovered.externalId,
+          status: existing.status,
+          canvasModifiedAt: existing.canvasModifiedAt,
+          discoveredModifiedAt: discovered.modifiedAt,
+        });
         continue;
       }
 
@@ -103,7 +109,7 @@ export class FileChangeDetector {
         },
       });
       toUpload.push(discovered);
-      logger.debug('FileChangeDetector: file changed, re-queued', { fileId: existing.id });
+      logger.info('FileChangeDetector: file changed, re-queued', { fileId: existing.id });
     }
 
     // Files in our DB that Canvas no longer returns

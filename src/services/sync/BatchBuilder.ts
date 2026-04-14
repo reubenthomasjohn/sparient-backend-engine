@@ -32,13 +32,14 @@ export class BatchBuilder {
         data: readyFiles.map((file) => ({
           batchId: newBatch.id,
           sourceFileId: file.id,
+          canvasFileId: file.canvasFileId,
         })),
       });
 
-      // Transition files to processing status
+      // Transition files to batched status
       await tx.sourceFile.updateMany({
         where: { id: { in: readyFiles.map((f) => f.id) } },
-        data: { status: 'processing' },
+        data: { status: 'batched' },
       });
 
       return newBatch;

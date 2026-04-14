@@ -3,6 +3,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import connectivoRoutes from './api/routes/connectivo.routes';
+import institutionRoutes from './api/routes/institutions.routes';
 import syncRoutes from './api/routes/sync.routes';
 import batchRoutes from './api/routes/batches.routes';
 import { errorHandler } from './api/middleware/errorHandler.middleware';
@@ -38,6 +39,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // Routes
 app.use('/api/v1/connectivo', connectivoRoutes);
+app.use('/api/v1/institutions', institutionRoutes);
 app.use('/api/v1/sync', syncRoutes);
 app.use('/api/v1/batches', batchRoutes);
 

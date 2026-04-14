@@ -45,12 +45,12 @@ class S3Service {
   }
 
   buildSourceKey(
-    institutionSlug: string,
+    institutionId: string,
     canvasCourseId: string,
     canvasFileId: string,
     fileName: string,
   ): string {
-    return `${institutionSlug}/courses/${canvasCourseId}/files/${canvasFileId}/${fileName}`;
+    return `${institutionId}/courses/${canvasCourseId}/files/${canvasFileId}/${fileName}`;
   }
 }
 

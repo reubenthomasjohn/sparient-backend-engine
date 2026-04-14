@@ -17,9 +17,7 @@ export function startNightlySyncJob(): void {
   cron.schedule(schedule, async () => {
     logger.info('Nightly sync job: starting');
 
-    const institutions = await prisma.institution.findMany({
-      where: { syncEnabled: true },
-    });
+    const institutions = await prisma.institution.findMany();
 
     logger.info('Nightly sync job: institutions to sync', { count: institutions.length });
 

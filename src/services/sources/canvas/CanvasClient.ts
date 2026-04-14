@@ -1,4 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
+import { CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
 
 interface CanvasCredentials {
@@ -21,12 +22,25 @@ export class CanvasClient {
       },
       // Canvas rate-limits aggressively; a conservative timeout prevents hanging jobs
       timeout: 30_000,
+      // Canvas expects repeated keys for arrays: content_types[]=a&content_types[]=b
+      // axios's default serialises as content_types[0]=a which Canvas ignores
+      paramsSerializer: (params: Record<string, unknown>) => {
+        const parts = new URLSearchParams();
+        for (const [key, value] of Object.entries(params)) {
+          if (Array.isArray(value)) {
+            value.forEach((v) => parts.append(key, String(v)));
+          } else if (value !== undefined && value !== null) {
+            parts.append(key, String(value));
+          }
+        }
+        return parts.toString();
+      },
     });
   }
 
   // Fetches all pages of a paginated Canvas endpoint.
   // Canvas signals the next page via a Link header: rel="next"
-  async getPaginated<T>(path: string, params: Record<string, unknown> = {}): Promise<T[]> {
+  async getPaginated<T>(path: string, params: Record<string, unknown | unknown[]> = {}): Promise<T[]> {
     const results: T[] = [];
     let nextUrl: string | null = null;
 
@@ -47,6 +61,18 @@ export class CanvasClient {
     }
 
     return results;
+  }
+
+  // Fetches all enrollment terms for the account.
+  // The Canvas terms endpoint wraps its response in { enrollment_terms: [...] }
+  // rather than returning a bare array, so it can't use getPaginated.
+  // In practice no institution will have more than 100 terms.
+  async getTerms(): Promise<CanvasTerm[]> {
+    const response = await this.http.get<{ enrollment_terms: CanvasTerm[] }>(
+      `/accounts/${this.accountId}/terms`,
+      { params: { per_page: 100 } },
+    );
+    return response.data.enrollment_terms;
   }
 
   private parseNextLink(linkHeader: string | undefined): string | null {

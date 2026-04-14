@@ -166,7 +166,7 @@ export class RemediationService {
     // Reset them to ready so BatchBuilder picks them up
     await prisma.sourceFile.updateMany({
       where: { id: { in: filesToResubmit.map((f) => f.id) } },
-      data: { status: 'ready', pendingResubmit: false },
+      data: { status: 'uploaded_to_s3', pendingResubmit: false },
     });
 
     await this.batchBuilder.createBatch(institution, course, filesToResubmit, { isRetry: false });

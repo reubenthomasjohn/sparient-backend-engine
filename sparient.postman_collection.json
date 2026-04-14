@@ -42,10 +42,24 @@
               "host": ["https://{{canvasDomain}}"],
               "path": ["api", "v1", "accounts", "{{canvasAccountId}}", "courses"],
               "query": [
-                { "key": "state[]",          "value": "available" },
-                { "key": "enrollment_type",  "value": "teacher" },
-                { "key": "per_page",         "value": "10" }
+                { "key": "state[]",         "value": "available" },
+                { "key": "enrollment_type", "value": "teacher" },
+                { "key": "per_page",        "value": "10" }
               ]
+            }
+          }
+        },
+        {
+          "name": "List enrollment terms for account",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
+            ],
+            "url": {
+              "raw": "https://{{canvasDomain}}/api/v1/accounts/{{canvasAccountId}}/terms",
+              "host": ["https://{{canvasDomain}}"],
+              "path": ["api", "v1", "accounts", "{{canvasAccountId}}", "terms"]
             }
           }
         },
@@ -61,13 +75,13 @@
               "host": ["https://{{canvasDomain}}"],
               "path": ["api", "v1", "courses", "{{courseId}}", "files"],
               "query": [
-                { "key": "sort",             "value": "updated_at" },
-                { "key": "order",            "value": "desc" },
-                { "key": "per_page",         "value": "20" },
-                { "key": "content_types[]",  "value": "application/pdf" },
-                { "key": "content_types[]",  "value": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
-                { "key": "content_types[]",  "value": "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
-                { "key": "content_types[]",  "value": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }
+                { "key": "sort",            "value": "updated_at" },
+                { "key": "order",           "value": "desc" },
+                { "key": "per_page",        "value": "20" },
+                { "key": "content_types[]", "value": "application/pdf" },
+                { "key": "content_types[]", "value": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+                { "key": "content_types[]", "value": "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+                { "key": "content_types[]", "value": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }
               ]
             }
           }
@@ -86,19 +100,19 @@
               "variable": [{ "key": "fileId", "value": "" }]
             }
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "Institutions (Internal)",
+      "description": "Institution-level admin operations.",
+      "item": [
         {
-          "name": "List enrollment terms for account",
+          "name": "Wipe institution data",
           "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
-            ],
-            "url": {
-              "raw": "https://{{canvasDomain}}/api/v1/accounts/{{canvasAccountId}}/terms",
-              "host": ["https://{{canvasDomain}}"],
-              "path": ["api", "v1", "accounts", "{{canvasAccountId}}", "terms"]
-            }
+            "method": "DELETE",
+            "description": "Deletes all courses, source files, batches, batch files, and issue categories for the institution. The institution row itself is preserved. Useful for resetting before a clean re-sync.",
+            "url": "{{baseUrl}}/api/v1/institutions/{{institutionId}}/data"
           }
         }
       ]
@@ -115,10 +129,41 @@
           }
         },
         {
+          "name": "Force full institution re-sync",
+          "request": {
+            "method": "POST",
+            "description": "Clears lastSyncedAt on all courses and resets canvasModifiedAt to epoch, forcing every file to be treated as changed regardless of its current status.",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}?force=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sync", "institutions", "{{institutionId}}"],
+              "query": [
+                { "key": "force", "value": "true" }
+              ]
+            }
+          }
+        },
+        {
           "name": "Trigger single course sync",
           "request": {
             "method": "POST",
+            "description": "courseId is the Canvas course ID (e.g. 114), not the internal UUID.",
             "url": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}/courses/{{courseId}}"
+          }
+        },
+        {
+          "name": "Force single course re-sync",
+          "request": {
+            "method": "POST",
+            "description": "Resets lastSyncedAt and canvasModifiedAt for this course only, forcing all its files to be re-queued.",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}/courses/{{courseId}}?force=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sync", "institutions", "{{institutionId}}", "courses", "{{courseId}}"],
+              "query": [
+                { "key": "force", "value": "true" }
+              ]
+            }
           }
         }
       ]
@@ -145,12 +190,12 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/batches/institutions/{{institutionId}}?status=pending",
+              "raw": "{{baseUrl}}/api/v1/batches/institutions/{{institutionId}}",
               "host": ["{{baseUrl}}"],
               "path": ["api", "v1", "batches", "institutions", "{{institutionId}}"],
               "query": [
-                { "key": "status",   "value": "pending",  "disabled": true },
-                { "key": "courseId", "value": "{{courseId}}", "disabled": true }
+                { "key": "status",   "value": "pending",       "disabled": true },
+                { "key": "courseId", "value": "{{courseId}}",  "disabled": true }
               ]
             }
           }
@@ -176,8 +221,8 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "X-API-Key",     "value": "{{connectivoApiKey}}" },
-              { "key": "Content-Type",  "value": "application/json" }
+              { "key": "X-API-Key",    "value": "{{connectivoApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
@@ -190,13 +235,14 @@
           "name": "Submit batch results",
           "request": {
             "method": "POST",
+            "description": "file_id must be the internal source_file UUID (returned by GET /batches/:id/files as sourceFileId). S3 paths use the institution UUID, not a slug.",
             "header": [
-              { "key": "X-API-Key",     "value": "{{connectivoApiKey}}" },
-              { "key": "Content-Type",  "value": "application/json" }
+              { "key": "X-API-Key",    "value": "{{connectivoApiKey}}" },
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"batch\": {\n    \"id\": \"conn-batch-uuid-test-123\",\n    \"external_batch_id\": \"{{batchId}}\",\n    \"state\": \"Completed\",\n    \"started_at\": \"2026-04-13T02:01:00.000Z\",\n    \"completed_at\": \"2026-04-13T02:14:37.000Z\",\n    \"summary\": {\n      \"total_files\": 1,\n      \"total_pages\": 24,\n      \"succeeded\": 1,\n      \"failed\": 0,\n      \"requires_review\": 0,\n      \"total_issues_found\": 6,\n      \"total_issues_fixed\": 6\n    }\n  },\n  \"folders\": [\n    {\n      \"path\": \"institution-slug/courses/112233/files\",\n      \"files\": [\n        {\n          \"file_id\": \"REPLACE_WITH_SOURCE_FILE_ID\",\n          \"file_name\": \"lecture-1.pdf\",\n          \"state\": \"Completed\",\n          \"quality_label\": \"AA\",\n          \"remediated_path\": \"institution-slug/courses/112233/files/987001/lecture-1.pdf\",\n          \"total_pages\": 24,\n          \"processing_time_seconds\": 38,\n          \"verapdf_errors\": 0,\n          \"verapdf_warnings\": 2,\n          \"issues_by_category\": {\n            \"headings\": { \"found\": 3, \"fixed\": 3, \"remaining\": 0 },\n            \"alt_text\":  { \"found\": 2, \"fixed\": 2, \"remaining\": 0 },\n            \"contrast\":  { \"found\": 1, \"fixed\": 1, \"remaining\": 0 }\n          },\n          \"error\": null\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"batch\": {\n    \"id\": \"conn-batch-uuid-test-123\",\n    \"external_batch_id\": \"{{batchId}}\",\n    \"state\": \"Completed\",\n    \"started_at\": \"2026-04-13T02:01:00.000Z\",\n    \"completed_at\": \"2026-04-13T02:14:37.000Z\",\n    \"summary\": {\n      \"total_files\": 1,\n      \"total_pages\": 24,\n      \"succeeded\": 1,\n      \"failed\": 0,\n      \"requires_review\": 0,\n      \"total_issues_found\": 6,\n      \"total_issues_fixed\": 6\n    }\n  },\n  \"folders\": [\n    {\n      \"path\": \"{{institutionId}}/courses/112233/files\",\n      \"files\": [\n        {\n          \"file_id\": \"REPLACE_WITH_SOURCE_FILE_UUID\",\n          \"file_name\": \"lecture-1.pdf\",\n          \"state\": \"Completed\",\n          \"quality_label\": \"AA\",\n          \"remediated_path\": \"{{institutionId}}/courses/112233/files/canvas-file-id/lecture-1.pdf\",\n          \"total_pages\": 24,\n          \"processing_time_seconds\": 38,\n          \"verapdf_errors\": 0,\n          \"verapdf_warnings\": 2,\n          \"issues_by_category\": {\n            \"headings\": { \"found\": 3, \"fixed\": 3, \"remaining\": 0 },\n            \"alt_text\":  { \"found\": 2, \"fixed\": 2, \"remaining\": 0 },\n            \"contrast\":  { \"found\": 1, \"fixed\": 1, \"remaining\": 0 }\n          },\n          \"error\": null\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": "{{baseUrl}}/api/v1/connectivo/batches/{{batchId}}/results"
           }

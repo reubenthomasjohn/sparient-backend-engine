@@ -6,6 +6,14 @@ export interface CanvasCourse {
   workflow_state: string;
 }
 
+export interface CanvasTerm {
+  id: number;
+  name: string;
+  start_at: string | null;
+  end_at: string | null;
+  workflow_state: string;
+}
+
 export interface CanvasFile {
   id: number;
   uuid: string;

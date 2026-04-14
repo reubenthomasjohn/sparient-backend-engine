@@ -1,10 +1,12 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { createHash, randomBytes } from 'crypto';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const prisma = new PrismaClient();
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
+const prisma = new PrismaClient({ adapter });
 
 function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
@@ -28,8 +30,11 @@ async function main(): Promise<void> {
   const canvasAccountId = requireEnv('CANVAS_ACCOUNT_ID');
   const canvasApiToken  = requireEnv('CANVAS_API_TOKEN');
 
-  // Derive a URL-safe slug from the domain, e.g. "myuni.instructure.com" → "myuni"
-  const slug = canvasDomain.split('.')[0];
+  // Slug is used in S3 paths — set INSTITUTION_SLUG explicitly.
+  // Falls back to the first component of the Canvas domain if not provided.
+  // Must be lowercase, alphanumeric + hyphens only, and unique across institutions.
+  const rawSlug = process.env.INSTITUTION_SLUG ?? canvasDomain.split('.')[0];
+  const slug = rawSlug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
   const institution = await prisma.institution.upsert({
     where: { slug },
@@ -43,7 +48,6 @@ async function main(): Promise<void> {
         api_token:  canvasApiToken,
       },
       writebackOptIn: false,
-      syncEnabled:    true,
     },
     update: {
       credentials: {

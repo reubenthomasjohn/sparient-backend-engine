@@ -3,22 +3,45 @@ import { Institution } from '@prisma/client';
 import { CanvasClient } from './CanvasClient';
 import { ISourceClient } from '../ISourceClient';
 import { DiscoveredCourse, DiscoveredFile } from '../../../types/source';
-import { CanvasCourse, CanvasFile } from '../../../types/canvas';
+import { CanvasCourse, CanvasFile, CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
 
-// All MIME types we pull from Canvas
+// Used as a server-side filter on the Canvas API request to reduce response size.
+// Canvas doesn't always assign correct MIME types, so we also check extensions
+// client-side below to catch files served as application/octet-stream etc.
 const SUPPORTED_MIME_TYPES = [
   'application/pdf',
-  // Word
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/msword',
-  // PowerPoint
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'application/vnd.ms-powerpoint',
-  // Excel
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-excel',
 ];
+
+const SUPPORTED_EXTENSIONS = new Set([
+  '.pdf',
+  '.doc', '.docx',
+  '.ppt', '.pptx',
+  '.xls', '.xlsx',
+]);
+
+// A term is active if now falls within its date range.
+// null start_at = no lower bound (treat as already started).
+// null end_at   = no upper bound (treat as never-ending, e.g. the Default Term).
+function isActiveTerm(term: CanvasTerm, now: Date): boolean {
+  if (term.start_at !== null && new Date(term.start_at) > now) return false;
+  if (term.end_at !== null && new Date(term.end_at) < now) return false;
+  return true;
+}
+
+// Extension check is the canonical filter — Canvas doesn't always assign correct MIME types
+// (e.g. application/octet-stream for .docx), so we can't rely on content-type alone.
+// The SUPPORTED_MIME_TYPES array above is passed as a server-side hint only.
+function isSupportedFile(file: CanvasFile): boolean {
+  const ext = '.' + file.filename.split('.').pop()?.toLowerCase();
+  return SUPPORTED_EXTENSIONS.has(ext);
+}
 
 export class CanvasFileFetcher implements ISourceClient {
   private readonly client: CanvasClient;
@@ -35,14 +58,26 @@ export class CanvasFileFetcher implements ISourceClient {
   async getCourses(): Promise<DiscoveredCourse[]> {
     logger.info('Canvas: fetching courses', { accountId: this.client.accountId });
 
-    const canvasCourses = await this.client.getPaginated<CanvasCourse>(
-      `/accounts/${this.client.accountId}/courses`,
-      { state: ['available'], enrollment_type: 'teacher' },
-    );
+    const [canvasCourses, terms] = await Promise.all([
+      this.client.getPaginated<CanvasCourse>(
+        `/accounts/${this.client.accountId}/courses`,
+        { state: ['available'], enrollment_type: 'teacher' },
+      ),
+      this.client.getTerms(),
+    ]);
 
-    logger.info('Canvas: courses fetched', { count: canvasCourses.length });
+    const now = new Date();
+    const activeTermIds = new Set(terms.filter((t) => isActiveTerm(t, now)).map((t) => t.id));
 
-    return canvasCourses.map((c) => ({
+    const activeCourses = canvasCourses.filter((c) => activeTermIds.has(c.enrollment_term_id));
+
+    logger.info('Canvas: courses fetched', {
+      total: canvasCourses.length,
+      activeTerms: activeTermIds.size,
+      afterTermFilter: activeCourses.length,
+    });
+
+    return activeCourses.map((c) => ({
       externalId: c.id.toString(),
       name: c.name,
       courseCode: c.course_code ?? null,
@@ -53,19 +88,12 @@ export class CanvasFileFetcher implements ISourceClient {
   async getFiles(courseExternalId: string, lastSyncedAt: Date | null): Promise<DiscoveredFile[]> {
     logger.info('Canvas: fetching files', { courseId: courseExternalId, lastSyncedAt });
 
-    // Build content_types filter params
-    const contentTypeParams = SUPPORTED_MIME_TYPES.reduce<Record<string, string>>(
-      (acc, mimeType, i) => {
-        acc[`content_types[${i}]`] = mimeType;
-        return acc;
-      },
-      {},
-    );
-
-    // Sort by updated_at descending so we can stop early on incremental syncs
+    // Sort by updated_at descending so we can stop early on incremental syncs.
+    // content_types[] is serialised as repeated keys by our custom paramsSerializer:
+    // content_types[]=application/pdf&content_types[]=application/msword&...
     const allFiles = await this.client.getPaginated<CanvasFile>(
       `/courses/${courseExternalId}/files`,
-      { sort: 'updated_at', order: 'desc', ...contentTypeParams },
+      { sort: 'updated_at', order: 'desc', 'content_types[]': SUPPORTED_MIME_TYPES },
     );
 
     logger.info('Canvas: raw files fetched', { courseId: courseExternalId, count: allFiles.length });
@@ -73,11 +101,15 @@ export class CanvasFileFetcher implements ISourceClient {
     // On incremental syncs: discard files whose updated_at predates the last sync.
     // We still run modified_at comparison in FileChangeDetector for accuracy —
     // this is purely an optimisation to trim the list early.
-    const files = lastSyncedAt
+    const afterDateFilter = lastSyncedAt
       ? allFiles.filter((f) => new Date(f.updated_at) >= lastSyncedAt)
       : allFiles;
 
-    logger.info('Canvas: files after incremental filter', {
+    // Extension check catches files Canvas served with a wrong MIME type
+    // (e.g. application/octet-stream) that slipped past the server-side filter.
+    const files = afterDateFilter.filter(isSupportedFile);
+
+    logger.info('Canvas: files after incremental + extension filter', {
       courseId: courseExternalId,
       count: files.length,
     });
