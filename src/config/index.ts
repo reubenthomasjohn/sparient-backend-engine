@@ -27,6 +27,13 @@ const configSchema = z.object({
     retryCronSchedule: z.string().default('0 */2 * * *'),
     retryBaseDelayMinutes: z.coerce.number().default(30),
   }),
+  // If queue URLs are set, SqsQueue is used; otherwise InMemoryQueue runs in-process.
+  // Local dev can leave these unset — the consumers are started by server.ts.
+  queue: z.object({
+    discoveryUrl: z.string().optional(),
+    uploadUrl: z.string().optional(),
+    startConsumers: z.coerce.boolean().default(true),
+  }),
 });
 
 const parsed = configSchema.safeParse({
@@ -52,6 +59,11 @@ const parsed = configSchema.safeParse({
     syncCronSchedule: process.env.SYNC_CRON_SCHEDULE,
     retryCronSchedule: process.env.RETRY_CRON_SCHEDULE,
     retryBaseDelayMinutes: process.env.RETRY_BASE_DELAY_MINUTES,
+  },
+  queue: {
+    discoveryUrl: process.env.SQS_DISCOVERY_URL,
+    uploadUrl: process.env.SQS_UPLOAD_URL,
+    startConsumers: process.env.QUEUE_START_CONSUMERS,
   },
 });
 

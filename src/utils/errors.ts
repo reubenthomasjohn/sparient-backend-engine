@@ -17,6 +17,9 @@ export const Errors = {
   unauthorized: () =>
     new AppError('Unauthorized', 401, 'UNAUTHORIZED'),
 
+  forbidden: (message = 'Forbidden') =>
+    new AppError(message, 403, 'FORBIDDEN'),
+
   badRequest: (message: string) =>
     new AppError(message, 400, 'BAD_REQUEST'),
 

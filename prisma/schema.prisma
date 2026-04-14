@@ -11,16 +11,20 @@ enum SourceType {
   sharepoint
 }
 
-enum FileStatus {
-  pending
-  uploading_to_s3
-  uploaded_to_s3
-  batched                  // included in a batch, awaiting or under Connectivo remediation
+// Terminal outcome of the most recent completed remediation cycle for a source_file.
+// NULL on source_file.last_outcome means "cycle in progress or not yet attempted".
+enum LastOutcome {
   completed
   completed_with_warnings
   failed
   permanently_failed
-  deleted_from_source
+  deleted
+}
+
+enum WritebackState {
+  written
+  skipped_stale
+  failed
 }
 
 enum BatchStatus {
@@ -45,34 +49,35 @@ enum ConnectivoFileState {
 }
 
 model Institution {
-  id               String     @id @default(uuid())
-  name             String     @db.VarChar(255)
-  slug             String     @unique @db.VarChar(100)
-  sourceType       SourceType @map("source_type")
-  credentials      Json
-  writebackOptIn   Boolean    @default(false) @map("writeback_opt_in")
-  createdAt        DateTime   @default(now()) @map("created_at")
-  updatedAt        DateTime   @updatedAt @map("updated_at")
+  id             String     @id @default(uuid())
+  name           String     @db.VarChar(255)
+  slug           String     @unique @db.VarChar(100)
+  sourceType     SourceType @map("source_type")
+  credentials    Json
+  writebackOptIn Boolean    @default(false) @map("writeback_opt_in")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
 
-  courses Course[]
-  batches Batch[]
+  courses           Course[]
+  batches           Batch[]
+  connectivoApiKeys ConnectivoApiKey[]
 
   @@map("institutions")
 }
 
 model Course {
-  id               String    @id @default(uuid())
-  institutionId    String    @map("institution_id")
-  canvasCourseId   String    @map("canvas_course_id") @db.VarChar(100)
-  canvasTermId     String?   @map("canvas_term_id") @db.VarChar(100)
-  name             String    @db.VarChar(255)
-  courseCode       String?   @map("course_code") @db.VarChar(100)
-  writebackOptIn   Boolean?  @map("writeback_opt_in")
-  lastSyncedAt     DateTime? @map("last_synced_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  id             String    @id @default(uuid())
+  institutionId  String    @map("institution_id")
+  canvasCourseId String    @map("canvas_course_id") @db.VarChar(100)
+  canvasTermId   String?   @map("canvas_term_id") @db.VarChar(100)
+  name           String    @db.VarChar(255)
+  courseCode     String?   @map("course_code") @db.VarChar(100)
+  writebackOptIn Boolean?  @map("writeback_opt_in")
+  lastSyncedAt   DateTime? @map("last_synced_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  institution Institution @relation(fields: [institutionId], references: [id])
+  institution Institution  @relation(fields: [institutionId], references: [id])
   sourceFiles SourceFile[]
   batches     Batch[]
 
@@ -81,33 +86,47 @@ model Course {
   @@map("courses")
 }
 
+// Pipeline position is derived from three monotonic timestamps, not a status column.
+// See FILE_STATUSES.md for the full state-derivation rules.
 model SourceFile {
-  id                       String     @id @default(uuid())
-  courseId                 String     @map("course_id")
-  canvasFileId             String     @map("canvas_file_id") @db.VarChar(100)
-  displayName              String     @map("display_name") @db.VarChar(500)
-  fileName                 String     @map("file_name") @db.VarChar(500)
-  mimeType                 String     @map("mime_type") @db.VarChar(100)
-  sizeBytes                BigInt?    @map("size_bytes")
-  canvasModifiedAt         DateTime   @map("canvas_modified_at")
-  lastWritebackModifiedAt  DateTime?  @map("last_writeback_modified_at")
-  s3SourceKey              String?    @map("s3_source_key") @db.VarChar(1000)
-  s3SourceBucket           String?    @map("s3_source_bucket") @db.VarChar(255)
-  status                   FileStatus @default(pending)
-  pendingResubmit          Boolean    @default(false) @map("pending_resubmit")
-  retryCount               Int        @default(0) @map("retry_count")
-  maxRetries               Int        @default(3) @map("max_retries")
-  nextRetryAt              DateTime?  @map("next_retry_at")
-  lastFailureReason        String?    @map("last_failure_reason")
-  createdAt                DateTime   @default(now()) @map("created_at")
-  updatedAt                DateTime   @updatedAt @map("updated_at")
+  id                      String          @id @default(uuid())
+  courseId                String          @map("course_id")
+  canvasFileId            String          @map("canvas_file_id") @db.VarChar(100)
+  displayName             String          @map("display_name") @db.VarChar(500)
+  fileName                String          @map("file_name") @db.VarChar(500)
+  mimeType                String          @map("mime_type") @db.VarChar(100)
+  sizeBytes               BigInt?         @map("size_bytes")
+
+  // Latest modified_at we have seen from Canvas
+  discoveredModifiedAt    DateTime        @map("discovered_modified_at")
+
+  // Content-addressed S3 upload. s3SourceModifiedAt pins the version that key corresponds to.
+  s3SourceKey             String?         @map("s3_source_key") @db.VarChar(1000)
+  s3SourceBucket          String?         @map("s3_source_bucket") @db.VarChar(255)
+  s3SourceModifiedAt      DateTime?       @map("s3_source_modified_at")
+
+  // Version currently in-flight at Connectivo (set by BatchBuilder claim). Never cleared
+  // on success — a newer s3SourceModifiedAt naturally makes the row re-eligible for batching.
+  batchedModifiedAt       DateTime?       @map("batched_modified_at")
+
+  lastOutcome             LastOutcome?    @map("last_outcome")
+  lastFailureReason       String?         @map("last_failure_reason")
+  retryCount              Int             @default(0) @map("retry_count")
+  maxRetries              Int             @default(3) @map("max_retries")
+  nextRetryAt             DateTime?       @map("next_retry_at")
+
+  writebackState          WritebackState? @map("writeback_state")
+  lastWritebackModifiedAt DateTime?       @map("last_writeback_modified_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   course     Course      @relation(fields: [courseId], references: [id])
   batchFiles BatchFile[]
 
   @@unique([courseId, canvasFileId])
   @@index([courseId])
-  @@index([status])
+  @@index([lastOutcome])
   @@map("source_files")
 }
 
@@ -141,22 +160,26 @@ model Batch {
   @@map("batches")
 }
 
+// A batch_file pins the exact s3_source_key + modifiedAt that was handed to Connectivo.
+// Immutable after creation — edits to the underlying file produce a new batch_file, not a mutation.
 model BatchFile {
-  id                    String              @id @default(uuid())
-  batchId               String              @map("batch_id")
-  sourceFileId          String              @map("source_file_id")
-  canvasFileId          String              @map("canvas_file_id") @db.VarChar(100)
-  connectivoState       ConnectivoFileState? @map("connectivo_state")
-  qualityLabel          QualityLabel?       @map("quality_label")
-  remediatedS3Key       String?             @map("remediated_s3_key") @db.VarChar(1000)
-  remediatedS3Bucket    String?             @map("remediated_s3_bucket") @db.VarChar(255)
-  totalPages            Int?                @map("total_pages")
-  processingTimeSecs    Int?                @map("processing_time_seconds")
-  verapdfErrors         Int?                @map("verapdf_errors")
-  verapdfWarnings       Int?                @map("verapdf_warnings")
-  errorMessage          String?             @map("error_message")
-  createdAt             DateTime            @default(now()) @map("created_at")
-  updatedAt             DateTime            @updatedAt @map("updated_at")
+  id                 String               @id @default(uuid())
+  batchId            String               @map("batch_id")
+  sourceFileId       String               @map("source_file_id")
+  canvasFileId       String               @map("canvas_file_id") @db.VarChar(100)
+  s3SourceKey        String               @map("s3_source_key") @db.VarChar(1000)
+  sourceModifiedAt   DateTime             @map("source_modified_at")
+  connectivoState    ConnectivoFileState? @map("connectivo_state")
+  qualityLabel       QualityLabel?        @map("quality_label")
+  remediatedS3Key    String?              @map("remediated_s3_key") @db.VarChar(1000)
+  remediatedS3Bucket String?              @map("remediated_s3_bucket") @db.VarChar(255)
+  totalPages         Int?                 @map("total_pages")
+  processingTimeSecs Int?                 @map("processing_time_seconds")
+  verapdfErrors      Int?                 @map("verapdf_errors")
+  verapdfWarnings    Int?                 @map("verapdf_warnings")
+  errorMessage       String?              @map("error_message")
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
 
   batch           Batch               @relation(fields: [batchId], references: [id])
   sourceFile      SourceFile          @relation(fields: [sourceFileId], references: [id])
@@ -180,14 +203,20 @@ model FileIssueCategory {
   @@map("file_issue_categories")
 }
 
+// institutionId = NULL → global key (legacy behaviour; can access all institutions).
+// institutionId set → key is scoped; middleware rejects any cross-institution access.
 model ConnectivoApiKey {
-  id         String    @id @default(uuid())
-  name       String    @db.VarChar(255)
-  keyHash    String    @unique @map("key_hash") @db.VarChar(255)
-  isActive   Boolean   @default(true) @map("is_active")
-  lastUsedAt DateTime? @map("last_used_at")
-  expiresAt  DateTime? @map("expires_at")
-  createdAt  DateTime  @default(now()) @map("created_at")
+  id            String    @id @default(uuid())
+  institutionId String?   @map("institution_id")
+  name          String    @db.VarChar(255)
+  keyHash       String    @unique @map("key_hash") @db.VarChar(255)
+  isActive      Boolean   @default(true) @map("is_active")
+  lastUsedAt    DateTime? @map("last_used_at")
+  expiresAt     DateTime? @map("expires_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
 
+  institution Institution? @relation(fields: [institutionId], references: [id])
+
+  @@index([institutionId])
   @@map("connectivo_api_keys")
 }

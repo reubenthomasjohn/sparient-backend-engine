@@ -1,126 +1,103 @@
-import { Course, FileStatus, SourceFile } from '@prisma/client';
+import { Course } from '@prisma/client';
 import { DiscoveredFile } from '../../types/source';
 import prisma from '../../db/client';
 import { logger } from '../../utils/logger';
-
-// Statuses in which a re-upload should be queued but processing must not be interrupted
-const IN_FLIGHT_STATUSES: FileStatus[] = ['batched'];
-
-// Statuses from which we never auto-retry (operator must intervene)
-const TERMINAL_STATUSES: FileStatus[] = ['permanently_failed'];
+import { UploadJob } from '../../queue';
 
 export interface ChangeDetectionResult {
-  toUpload: DiscoveredFile[];   // new or changed files that need to be pulled from Canvas + uploaded to S3
-  toDelete: string[];           // canvas_file_ids no longer returned by Canvas
+  toUploadJobs: UploadJob[];
+  deletedCount: number;
 }
 
 export class FileChangeDetector {
-  async detect(course: Course, discoveredFiles: DiscoveredFile[]): Promise<ChangeDetectionResult> {
-    const existingFiles = await prisma.sourceFile.findMany({
+  async detect(course: Course, discovered: DiscoveredFile[]): Promise<ChangeDetectionResult> {
+    const existing = await prisma.sourceFile.findMany({
       where: { courseId: course.id },
     });
+    const existingByCanvasId = new Map(existing.map((f) => [f.canvasFileId, f]));
+    const discoveredIds = new Set(discovered.map((f) => f.externalId));
 
-    const existingByExternalId = new Map<string, SourceFile>(
-      existingFiles.map((f) => [f.canvasFileId, f]),
-    );
+    const toUploadJobs: UploadJob[] = [];
 
-    const discoveredExternalIds = new Set(discoveredFiles.map((f) => f.externalId));
-    const toUpload: DiscoveredFile[] = [];
+    for (const d of discovered) {
+      const row = existingByCanvasId.get(d.externalId);
 
-    for (const discovered of discoveredFiles) {
-      const existing = existingByExternalId.get(discovered.externalId);
+      // Skip files we ourselves wrote back to Canvas — their modifiedAt equals what
+      // Canvas returned to us on upload completion.
+      if (
+        row?.lastWritebackModifiedAt &&
+        d.modifiedAt.getTime() === row.lastWritebackModifiedAt.getTime()
+      ) {
+        continue;
+      }
 
-      if (!existing) {
-        // Brand new file — create a record and queue for upload
-        await prisma.sourceFile.create({
+      if (!row) {
+        const created = await prisma.sourceFile.create({
           data: {
             courseId: course.id,
-            canvasFileId: discovered.externalId,
-            displayName: discovered.displayName,
-            fileName: discovered.fileName,
-            mimeType: discovered.mimeType,
-            sizeBytes: discovered.sizeBytes,
-            canvasModifiedAt: discovered.modifiedAt,
-            status: 'pending',
+            canvasFileId: d.externalId,
+            displayName: d.displayName,
+            fileName: d.fileName,
+            mimeType: d.mimeType,
+            sizeBytes: d.sizeBytes,
+            discoveredModifiedAt: d.modifiedAt,
           },
         });
-        toUpload.push(discovered);
-        logger.info('FileChangeDetector: new file queued', { externalId: discovered.externalId });
+        toUploadJobs.push({ sourceFileId: created.id, modifiedAtMs: d.modifiedAt.getTime() });
         continue;
       }
 
-      // Skip files we ourselves wrote back to Canvas (loop prevention)
-      if (
-        existing.lastWritebackModifiedAt &&
-        discovered.modifiedAt.getTime() === existing.lastWritebackModifiedAt.getTime()
-      ) {
-        logger.info('FileChangeDetector: skipping own writeback', {
-          externalId: discovered.externalId,
-        });
-        continue;
-      }
+      const isNewer = d.modifiedAt > row.discoveredModifiedAt;
 
-      // No content change
-      if (discovered.modifiedAt <= existing.canvasModifiedAt) {
-        logger.info('FileChangeDetector: unchanged, skipping', {
-          externalId: discovered.externalId,
-          status: existing.status,
-          canvasModifiedAt: existing.canvasModifiedAt,
-          discoveredModifiedAt: discovered.modifiedAt,
-        });
-        continue;
-      }
-
-      // Content changed — handle based on current status
-      if (TERMINAL_STATUSES.includes(existing.status)) {
-        logger.warn('FileChangeDetector: changed file is permanently failed, skipping', {
-          fileId: existing.id,
-        });
-        continue;
-      }
-
-      if (IN_FLIGHT_STATUSES.includes(existing.status)) {
-        // Mark for resubmission after the in-flight batch completes
-        await prisma.sourceFile.update({
-          where: { id: existing.id },
-          data: {
-            pendingResubmit: true,
-            canvasModifiedAt: discovered.modifiedAt,
-          },
-        });
-        // Still upload the new version to S3 — versioning preserves the copy Connectivo is processing
-        toUpload.push(discovered);
-        logger.info('FileChangeDetector: file changed during processing, flagged for resubmit', {
-          fileId: existing.id,
-        });
-        continue;
-      }
-
-      // All other statuses: reset and re-queue
+      // Always refresh metadata so renames/resizes don't leave the UI with stale display names.
+      // Advance discoveredModifiedAt and clear terminal outcome only when content actually changed.
       await prisma.sourceFile.update({
-        where: { id: existing.id },
+        where: { id: row.id },
         data: {
-          status: 'pending',
-          canvasModifiedAt: discovered.modifiedAt,
-          pendingResubmit: false,
-          retryCount: 0,
-          nextRetryAt: null,
-          lastFailureReason: null,
+          displayName: d.displayName,
+          fileName: d.fileName,
+          mimeType: d.mimeType,
+          sizeBytes: d.sizeBytes,
+          ...(isNewer
+            ? {
+                discoveredModifiedAt: d.modifiedAt,
+                lastOutcome: null,
+                lastFailureReason: null,
+                retryCount: 0,
+                nextRetryAt: null,
+              }
+            : {}),
         },
       });
-      toUpload.push(discovered);
-      logger.info('FileChangeDetector: file changed, re-queued', { fileId: existing.id });
+
+      if (isNewer) {
+        toUploadJobs.push({ sourceFileId: row.id, modifiedAtMs: d.modifiedAt.getTime() });
+      }
     }
 
-    // Files in our DB that Canvas no longer returns
-    const toDelete = existingFiles
-      .filter(
-        (f) =>
-          !discoveredExternalIds.has(f.canvasFileId) &&
-          f.status !== 'deleted_from_source',
-      )
-      .map((f) => f.canvasFileId);
+    // Deletion detection with a mass-delete guard: a silent Canvas auth/scope failure can
+    // return an empty list even though the course still has files. We refuse to mark
+    // anything deleted in that specific shape. Genuine deletions (list returned but this
+    // file isn't in it) still go through.
+    let deletedCount = 0;
+    if (discovered.length === 0 && existing.length > 0) {
+      logger.warn(
+        'FileChangeDetector: Canvas returned empty list but DB has files — skipping deletes',
+        { courseId: course.id, existingCount: existing.length },
+      );
+    } else {
+      const toDelete = existing.filter(
+        (f) => !discoveredIds.has(f.canvasFileId) && f.lastOutcome !== 'deleted',
+      );
+      if (toDelete.length > 0) {
+        await prisma.sourceFile.updateMany({
+          where: { id: { in: toDelete.map((f) => f.id) } },
+          data: { lastOutcome: 'deleted' },
+        });
+        deletedCount = toDelete.length;
+      }
+    }
 
-    return { toUpload, toDelete };
+    return { toUploadJobs, deletedCount };
   }
 }

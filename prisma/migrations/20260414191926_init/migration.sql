@@ -2,7 +2,10 @@
 CREATE TYPE "SourceType" AS ENUM ('canvas', 'sharepoint');
 
 -- CreateEnum
-CREATE TYPE "FileStatus" AS ENUM ('pending', 'uploading_to_s3', 'ready', 'processing', 'completed', 'completed_with_warnings', 'failed', 'permanently_failed', 'deleted_from_source');
+CREATE TYPE "LastOutcome" AS ENUM ('completed', 'completed_with_warnings', 'failed', 'permanently_failed', 'deleted');
+
+-- CreateEnum
+CREATE TYPE "WritebackState" AS ENUM ('written', 'skipped_stale', 'failed');
 
 -- CreateEnum
 CREATE TYPE "BatchStatus" AS ENUM ('pending', 'processing', 'completed', 'completed_with_warnings', 'failed', 'cancelled');
@@ -21,7 +24,6 @@ CREATE TABLE "institutions" (
     "source_type" "SourceType" NOT NULL,
     "credentials" JSONB NOT NULL,
     "writeback_opt_in" BOOLEAN NOT NULL DEFAULT false,
-    "sync_enabled" BOOLEAN NOT NULL DEFAULT true,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -37,7 +39,6 @@ CREATE TABLE "courses" (
     "name" VARCHAR(255) NOT NULL,
     "course_code" VARCHAR(100),
     "writeback_opt_in" BOOLEAN,
-    "sync_enabled" BOOLEAN NOT NULL DEFAULT true,
     "last_synced_at" TIMESTAMP(3),
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
@@ -54,16 +55,18 @@ CREATE TABLE "source_files" (
     "file_name" VARCHAR(500) NOT NULL,
     "mime_type" VARCHAR(100) NOT NULL,
     "size_bytes" BIGINT,
-    "canvas_modified_at" TIMESTAMP(3) NOT NULL,
-    "last_writeback_modified_at" TIMESTAMP(3),
+    "discovered_modified_at" TIMESTAMP(3) NOT NULL,
     "s3_source_key" VARCHAR(1000),
     "s3_source_bucket" VARCHAR(255),
-    "status" "FileStatus" NOT NULL DEFAULT 'pending',
-    "pending_resubmit" BOOLEAN NOT NULL DEFAULT false,
+    "s3_source_modified_at" TIMESTAMP(3),
+    "batched_modified_at" TIMESTAMP(3),
+    "last_outcome" "LastOutcome",
+    "last_failure_reason" TEXT,
     "retry_count" INTEGER NOT NULL DEFAULT 0,
     "max_retries" INTEGER NOT NULL DEFAULT 3,
     "next_retry_at" TIMESTAMP(3),
-    "last_failure_reason" TEXT,
+    "writeback_state" "WritebackState",
+    "last_writeback_modified_at" TIMESTAMP(3),
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -99,6 +102,9 @@ CREATE TABLE "batch_files" (
     "id" TEXT NOT NULL,
     "batch_id" TEXT NOT NULL,
     "source_file_id" TEXT NOT NULL,
+    "canvas_file_id" VARCHAR(100) NOT NULL,
+    "s3_source_key" VARCHAR(1000) NOT NULL,
+    "source_modified_at" TIMESTAMP(3) NOT NULL,
     "connectivo_state" "ConnectivoFileState",
     "quality_label" "QualityLabel",
     "remediated_s3_key" VARCHAR(1000),
@@ -129,6 +135,7 @@ CREATE TABLE "file_issue_categories" (
 -- CreateTable
 CREATE TABLE "connectivo_api_keys" (
     "id" TEXT NOT NULL,
+    "institution_id" TEXT,
     "name" VARCHAR(255) NOT NULL,
     "key_hash" VARCHAR(255) NOT NULL,
     "is_active" BOOLEAN NOT NULL DEFAULT true,
@@ -152,7 +159,7 @@ CREATE UNIQUE INDEX "courses_institution_id_canvas_course_id_key" ON "courses"("
 CREATE INDEX "source_files_course_id_idx" ON "source_files"("course_id");
 
 -- CreateIndex
-CREATE INDEX "source_files_status_idx" ON "source_files"("status");
+CREATE INDEX "source_files_last_outcome_idx" ON "source_files"("last_outcome");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "source_files_course_id_canvas_file_id_key" ON "source_files"("course_id", "canvas_file_id");
@@ -175,6 +182,9 @@ CREATE INDEX "batch_files_source_file_id_idx" ON "batch_files"("source_file_id")
 -- CreateIndex
 CREATE UNIQUE INDEX "connectivo_api_keys_key_hash_key" ON "connectivo_api_keys"("key_hash");
 
+-- CreateIndex
+CREATE INDEX "connectivo_api_keys_institution_id_idx" ON "connectivo_api_keys"("institution_id");
+
 -- AddForeignKey
 ALTER TABLE "courses" ADD CONSTRAINT "courses_institution_id_fkey" FOREIGN KEY ("institution_id") REFERENCES "institutions"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
@@ -195,3 +205,6 @@ ALTER TABLE "batch_files" ADD CONSTRAINT "batch_files_source_file_id_fkey" FOREI
 
 -- AddForeignKey
 ALTER TABLE "file_issue_categories" ADD CONSTRAINT "file_issue_categories_batch_file_id_fkey" FOREIGN KEY ("batch_file_id") REFERENCES "batch_files"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "connectivo_api_keys" ADD CONSTRAINT "connectivo_api_keys_institution_id_fkey" FOREIGN KEY ("institution_id") REFERENCES "institutions"("id") ON DELETE SET NULL ON UPDATE CASCADE;

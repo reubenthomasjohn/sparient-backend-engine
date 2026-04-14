@@ -8,20 +8,35 @@ Backend engine for pulling course files from institutional sources (Canvas, Shar
 Nightly Cron / Manual Trigger
         │
         ▼
-  SyncOrchestrator
-  ├── Pulls courses + files from Canvas
-  ├── Uploads new/changed files to S3 (source bucket)
-  └── Creates a batch per course (status: pending)
-        │
-        ▼
-  Connectivo polls GET /api/v1/connectivo/batches
-  ├── Acknowledges each batch
-  ├── Processes files, writes remediated files to S3 (remediated bucket)
-  └── POSTs results to POST /api/v1/connectivo/batches/:id/results
-        │
-        ▼
-  RemediationService stores results, triggers retries/resubmits
+  SyncOrchestrator ──► discovery queue
+                          │
+                          ▼
+                   Discovery worker
+                   ├── Lists Canvas courses + files
+                   ├── FileChangeDetector bumps discovered_modified_at
+                   └── Enqueues one UploadJob per new/changed file
+                          │
+                          ▼
+                      upload queue
+                          │
+                          ▼
+                    Upload worker
+                    ├── Re-fetches Canvas file (fresh pre-signed URL)
+                    ├── Streams to S3 (content-addressed key: v-:modifiedAtMs)
+                    ├── Conditionally UPDATEs s3_source_modified_at (monotonic)
+                    └── Calls BatchBuilder, which atomically claims files
+                          │
+                          ▼
+  Connectivo polls  GET  /api/v1/connectivo/batches
+                    POST /api/v1/connectivo/batches/:id/acknowledge   (idempotent)
+                    POST /api/v1/connectivo/batches/:id/results       (idempotent)
+                          │
+                          ▼
+                  RemediationService writes last_outcome;
+                  missing files are marked failed → retry job picks them up.
 ```
+
+Queues are abstracted behind `IQueue`. In dev (no `SQS_*_URL` set) both queues run in-process with a `setInterval` poller. In prod the same handlers run as Lambdas triggered by SQS.
 
 ## Prerequisites
 
@@ -71,6 +86,12 @@ CONNECTIVO_API_KEY_SECRET=your-secret-here
 
 # Optional
 INSTITUTION_NAME="University of XYZ"
+
+# Queues — leave unset in dev to use the in-memory queue. In prod, set both URLs
+# and set QUEUE_START_CONSUMERS=false on the API service (Lambdas consume instead).
+# SQS_DISCOVERY_URL=https://sqs.us-east-1.amazonaws.com/…/sparient-discovery
+# SQS_UPLOAD_URL=https://sqs.us-east-1.amazonaws.com/…/sparient-upload
+# QUEUE_START_CONSUMERS=true
 ```
 
 **Getting your Canvas credentials:**
@@ -167,18 +188,23 @@ You should see a batch per course with `status: pending`.
 ```
 Connectivo (Authenticated) → List pending batches
 ```
-Copy a `batch_id` from the response and set it as the `batchId` variable.
+From the response, set the following collection variables from one of the files:
+- `batchId` — top-level `batch_id`
+- `sourceFileId` — `files[i].file_id` (this is the source_file UUID, *not* the Canvas file id)
+- `canvasFileId` — `files[i].canvas_file_id`
+- `sourceModifiedAtMs` — parse the `v-<ms>` segment out of `files[i].s3_key` and paste the ms value. Used only to build the sample `remediated_path` in step 7.
 
 **6. Simulate Connectivo acknowledging**
 ```
 Connectivo (Authenticated) → Acknowledge batch
 ```
+Idempotent: re-POSTing the same `connectivo_batch_id` returns 200. A different id on a processing batch returns 409.
 
 **7. Simulate Connectivo submitting results**
 ```
 Connectivo (Authenticated) → Submit batch results
 ```
-Update the `file_id` in the request body to match a `sourceFileId` from step 5.
+`file_id` must be the source_file UUID (`sourceFileId`), not `canvasFileId`. Files missing from the payload are automatically marked failed. Replaying the same `connectivo_batch_id` on a terminal batch is a no-op.
 
 **8. Verify final state**
 ```
@@ -215,10 +241,11 @@ Batches (Internal) → Get files in a batch
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/sync/institutions/:id` | Trigger full institution sync |
-| `POST` | `/api/v1/sync/institutions/:id/courses/:courseId` | Trigger single course sync |
+| `POST` | `/api/v1/sync/institutions/:id` | Enqueue a full institution discovery job (`?force=true` rewinds `discovered_modified_at`) |
+| `POST` | `/api/v1/sync/institutions/:id/courses/:courseId` | Enqueue a single-course discovery job |
+| `DELETE` | `/api/v1/institutions/:id/data` | Wipe all courses/files/batches for the institution |
 | `GET` | `/api/v1/batches/:id` | Get batch detail |
-| `GET` | `/api/v1/batches/:id/files` | Get files + results for a batch |
+| `GET` | `/api/v1/batches/:id/files` | Get files + pinned `s3SourceKey` / `sourceModifiedAt` for a batch |
 | `GET` | `/api/v1/batches/institutions/:id` | List batches for an institution |
 | `GET` | `/health` | Health check |
 
@@ -241,6 +268,18 @@ src/
 ├── jobs/
 │   ├── nightlySync.job.ts             # Cron: 2 AM daily
 │   └── retry.job.ts                   # Cron: every 2 hours
+├── queue/
+│   ├── IQueue.ts                      # Send / startConsumer / stop
+│   ├── InMemoryQueue.ts               # Dev: setInterval poller
+│   ├── SqsQueue.ts                    # Prod: SQS long-poll
+│   └── index.ts                       # Factory + DiscoveryJob / UploadJob types
+├── workers/
+│   ├── discovery/
+│   │   ├── handler.ts                 # Discovery entry (queue + Lambda share this)
+│   │   └── lambda.ts                  # SQSEvent → handler, ReportBatchItemFailures
+│   └── upload/
+│       ├── handler.ts                 # Upload entry (monotonic UPDATE + BatchBuilder)
+│       └── lambda.ts                  # SQSEvent → handler
 ├── services/
 │   ├── sources/
 │   │   ├── ISourceClient.ts           # Interface for all source systems
@@ -250,9 +289,9 @@ src/
 │   │       └── CanvasFileFetcher.ts   # Implements ISourceClient
 │   ├── storage/S3Service.ts
 │   ├── sync/
-│   │   ├── FileChangeDetector.ts      # Handles all file change edge cases
-│   │   ├── BatchBuilder.ts
-│   │   └── SyncOrchestrator.ts
+│   │   ├── FileChangeDetector.ts      # Bumps discovered_modified_at, clears outcomes
+│   │   ├── BatchBuilder.ts            # Atomic claim via batched_modified_at
+│   │   └── SyncOrchestrator.ts        # Thin wrapper — enqueues a DiscoveryJob
 │   ├── remediation/RemediationService.ts
 │   └── retry/RetryService.ts
 ├── types/
@@ -261,7 +300,8 @@ src/
 │   └── source.ts
 ├── utils/
 │   ├── logger.ts                      # Winston (JSON in prod, readable in dev)
-│   └── errors.ts
+│   ├── errors.ts
+│   └── failure.ts                     # Retry-count + exponential backoff helper
 ├── app.ts
 └── server.ts
 prisma/

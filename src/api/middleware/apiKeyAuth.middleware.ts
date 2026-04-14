@@ -3,12 +3,13 @@ import { createHash } from 'crypto';
 import prisma from '../../db/client';
 import { Errors } from '../../utils/errors';
 
-// We hash the incoming key with SHA-256 and compare it against stored hashes.
-// Keys are never stored in plaintext.
 function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
+// Attaches { id, institutionId } to res.locals.connectivoApiKey. institutionId is null
+// for legacy global keys and a string for scoped keys — routes consult it to block
+// cross-institution access.
 export async function apiKeyAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const key = req.headers['x-api-key'];
 
@@ -32,10 +33,18 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  // Fire-and-forget last_used_at update — no need to await
+  res.locals.connectivoApiKey = {
+    id: apiKey.id,
+    institutionId: apiKey.institutionId,
+  };
+
   prisma.connectivoApiKey
     .update({ where: { id: apiKey.id }, data: { lastUsedAt: new Date() } })
     .catch(() => {});
 
   next();
+}
+
+export function getAuthInstitutionId(res: Response): string | null {
+  return res.locals.connectivoApiKey?.institutionId ?? null;
 }

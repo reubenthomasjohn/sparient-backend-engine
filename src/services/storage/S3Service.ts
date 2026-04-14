@@ -1,11 +1,16 @@
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-} from '@aws-sdk/client-s3';
+import { Readable } from 'stream';
+import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
+
+export interface SourceKeyParams {
+  institutionId: string;
+  canvasCourseId: string;
+  canvasFileId: string;
+  modifiedAt: Date;
+  fileName: string;
+}
 
 class S3Service {
   private readonly client: S3Client;
@@ -20,17 +25,19 @@ class S3Service {
     });
   }
 
-  async uploadSourceFile(key: string, body: Buffer, mimeType: string): Promise<void> {
-    logger.debug('S3: uploading source file', { bucket: config.aws.s3SourceBucket, key });
+  // Streams body to S3 via multipart upload — works for files of any size without buffering.
+  async uploadSourceFileStream(key: string, body: Readable, mimeType: string): Promise<void> {
+    logger.debug('S3: streaming source file', { bucket: config.aws.s3SourceBucket, key });
 
-    await this.client.send(
-      new PutObjectCommand({
+    await new Upload({
+      client: this.client,
+      params: {
         Bucket: config.aws.s3SourceBucket,
         Key: key,
         Body: body,
         ContentType: mimeType,
-      }),
-    );
+      },
+    }).done();
 
     logger.info('S3: source file uploaded', { key });
   }
@@ -44,13 +51,11 @@ class S3Service {
     }
   }
 
-  buildSourceKey(
-    institutionId: string,
-    canvasCourseId: string,
-    canvasFileId: string,
-    fileName: string,
-  ): string {
-    return `${institutionId}/courses/${canvasCourseId}/files/${canvasFileId}/${fileName}`;
+  // Content-addressed: the modifiedAt lives in the key, so editing a file produces a new
+  // key rather than overwriting the in-flight object. No reliance on S3 bucket versioning.
+  buildSourceKey(params: SourceKeyParams): string {
+    const version = params.modifiedAt.getTime();
+    return `${params.institutionId}/courses/${params.canvasCourseId}/files/${params.canvasFileId}/v-${version}/${params.fileName}`;
   }
 }
 
