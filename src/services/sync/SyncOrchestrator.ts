@@ -8,7 +8,7 @@ import { logger } from '../../utils/logger';
 export class SyncOrchestrator {
   async syncInstitution(institutionId: string, courseId?: string): Promise<void> {
     await prisma.institution.findUniqueOrThrow({ where: { id: institutionId } });
-    await discoveryQueue.send({ institutionId, courseId });
+    await discoveryQueue.send({ type: 'discover', institutionId, courseId });
     logger.info('SyncOrchestrator: discovery job enqueued', { institutionId, courseId });
   }
 }

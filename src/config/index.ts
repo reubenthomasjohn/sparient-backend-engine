@@ -24,7 +24,6 @@ const configSchema = z.object({
   }),
   jobs: z.object({
     syncCronSchedule: z.string().default('0 2 * * *'),
-    retryCronSchedule: z.string().default('0 */2 * * *'),
     retryBaseDelayMinutes: z.coerce.number().default(30),
   }),
   // If queue URLs are set, SqsQueue is used; otherwise InMemoryQueue runs in-process.
@@ -57,7 +56,6 @@ const parsed = configSchema.safeParse({
   },
   jobs: {
     syncCronSchedule: process.env.SYNC_CRON_SCHEDULE,
-    retryCronSchedule: process.env.RETRY_CRON_SCHEDULE,
     retryBaseDelayMinutes: process.env.RETRY_BASE_DELAY_MINUTES,
   },
   queue: {

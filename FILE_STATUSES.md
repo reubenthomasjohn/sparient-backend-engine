@@ -15,7 +15,8 @@ Every `source_file` carries these fields:
 | `s3_source_modified_at` | The `modified_at` that was uploaded to S3. Always `<= discovered_modified_at`. |
 | `batched_modified_at` | The `modified_at` that was last sent in a batch to Connectivo. Always `<= s3_source_modified_at`. |
 | `last_outcome` | Terminal Connectivo outcome: `completed`, `completed_with_warnings`, `failed`, `permanently_failed`, or `deleted`. `null` until first terminal event. |
-| `last_failure_reason`, `retry_count`, `max_retries`, `next_retry_at` | Retry bookkeeping. |
+| `last_failure_reason`, `retry_count`, `max_retries` | Retry bookkeeping. `retry_count >= max_retries` is what gates retries. |
+| `next_retry_at` | Observability only — no longer drives scheduling. Retries fire on the next daily sweep. |
 | `writeback_state`, `last_writeback_modified_at` | Writeback bookkeeping. `last_writeback_modified_at` is consulted by `FileChangeDetector` to ignore our own writebacks. |
 
 ---
@@ -29,7 +30,7 @@ Every `source_file` carries these fields:
 | In-flight with Connectivo | `batched_modified_at = s3_source_modified_at AND last_outcome IS NULL` (or outcome is older than the current batched version) |
 | Terminal | `last_outcome IS NOT NULL AND batched_modified_at = s3_source_modified_at` |
 | Deleted from source | `last_outcome = 'deleted'` |
-| Retry-eligible | `last_outcome = 'failed' AND retry_count < max_retries AND next_retry_at <= now()` |
+| Retry-eligible | `last_outcome = 'failed' AND retry_count < max_retries` (swept daily) |
 
 ---
 

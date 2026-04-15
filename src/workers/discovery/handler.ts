@@ -1,5 +1,5 @@
 import prisma from '../../db/client';
-import { DiscoveryJob, uploadQueue } from '../../queue';
+import { DiscoveryJob, discoveryQueue, uploadQueue } from '../../queue';
 import { SourceRegistry } from '../../services/sources/SourceRegistry';
 import { FileChangeDetector } from '../../services/sync/FileChangeDetector';
 import { BatchBuilder } from '../../services/sync/BatchBuilder';
@@ -8,10 +8,98 @@ import { logger } from '../../utils/logger';
 const changeDetector = new FileChangeDetector();
 const batchBuilder = new BatchBuilder();
 
-// Handles a single discovery job. Runs for every active-term course (or just one,
-// when job.courseId is set). Idempotent — safe to run concurrently with other
-// discovery jobs for the same institution; per-file claims handle the races.
 export async function handleDiscoveryJob(job: DiscoveryJob): Promise<void> {
+  if (job.type === 'sweep') {
+    await runSweep();
+    return;
+  }
+  await runDiscover(job);
+}
+
+// Runs once per day (EventBridge in prod, nightly cron locally). Does two things:
+//   1. Finds institutions due for a sync and enqueues a `discover` per institution.
+//   2. Re-enqueues uploads / re-batches for files stuck in `failed` with retries left.
+// Kept small and idempotent — SQS can redeliver, and duplicate per-institution jobs
+// are safe (FileChangeDetector and BatchBuilder are idempotent).
+async function runSweep(): Promise<void> {
+  logger.info('Discovery sweep: start');
+
+  const now = new Date();
+  const institutions = await prisma.institution.findMany({
+    where: { syncEnabled: true },
+  });
+
+  const due = institutions.filter((i) => {
+    if (!i.lastSyncedAt) return true;
+    const ageHours = (now.getTime() - i.lastSyncedAt.getTime()) / 3_600_000;
+    return ageHours >= i.syncIntervalHours;
+  });
+
+  for (const inst of due) {
+    await discoveryQueue.send({ type: 'discover', institutionId: inst.id });
+  }
+  logger.info('Discovery sweep: institutions enqueued', {
+    enqueued: due.length,
+    skipped: institutions.length - due.length,
+  });
+
+  await sweepRetries();
+
+  logger.info('Discovery sweep: complete');
+}
+
+// Files with last_outcome='failed' and retries left come in two shapes:
+//   - no s3_source_key → upload never succeeded; re-enqueue the upload
+//   - s3_source_key set → remediation failed; clear the in-flight pin so BatchBuilder
+//                         re-picks the file on the next per-institution discover pass
+async function sweepRetries(): Promise<void> {
+  const eligible = await prisma.sourceFile.findMany({
+    where: { lastOutcome: 'failed' },
+    select: {
+      id: true,
+      s3SourceKey: true,
+      retryCount: true,
+      maxRetries: true,
+      discoveredModifiedAt: true,
+    },
+  });
+
+  const retriable = eligible.filter((f) => f.retryCount < f.maxRetries);
+  if (retriable.length === 0) {
+    logger.info('Discovery sweep: no retry-eligible files');
+    return;
+  }
+
+  const needUpload = retriable.filter((f) => !f.s3SourceKey);
+  const needBatch = retriable.filter((f) => f.s3SourceKey);
+
+  for (const f of needUpload) {
+    await uploadQueue.send({
+      sourceFileId: f.id,
+      modifiedAtMs: f.discoveredModifiedAt.getTime(),
+    });
+  }
+
+  if (needBatch.length > 0) {
+    // Clear outcome + batched pin; next per-institution discovery pass will re-batch these.
+    await prisma.sourceFile.updateMany({
+      where: { id: { in: needBatch.map((f) => f.id) } },
+      data: { lastOutcome: null, batchedModifiedAt: null, nextRetryAt: null },
+    });
+  }
+
+  logger.info('Discovery sweep: retries queued', {
+    reuploads: needUpload.length,
+    rebatches: needBatch.length,
+  });
+}
+
+// Runs per-institution. Courses are upserted from the source system, then each eligible
+// course is discovered + batched. Idempotent — safe to run concurrently with other
+// discovery jobs for the same institution; per-file claims handle the races.
+async function runDiscover(
+  job: Extract<DiscoveryJob, { type: 'discover' }>,
+): Promise<void> {
   const institution = await prisma.institution.findUniqueOrThrow({
     where: { id: job.institutionId },
   });
@@ -72,9 +160,6 @@ export async function handleDiscoveryJob(job: DiscoveryJob): Promise<void> {
         await uploadQueue.send(uj);
       }
 
-      // Any files already uploaded in a previous run are waiting for batching — pick them up now.
-      // The upload worker also calls buildForCourse after a successful upload so newly-uploaded
-      // files don't need to wait for the next discovery pass.
       await batchBuilder.buildForCourse(institution, course, { isInitialSync });
 
       await prisma.course.update({
@@ -91,4 +176,10 @@ export async function handleDiscoveryJob(job: DiscoveryJob): Promise<void> {
       logger.error('Discovery: course failed', { courseId: course.id, error: err });
     }
   }
+
+  // Mark the institution itself as synced so the sweep's "due" check respects syncIntervalHours.
+  await prisma.institution.update({
+    where: { id: institution.id },
+    data: { lastSyncedAt: new Date() },
+  });
 }

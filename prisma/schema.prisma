@@ -1,5 +1,7 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Native = local dev (mac/linux). rhel + arm64 = AWS Lambda (Amazon Linux 2023, Graviton).
+  binaryTargets = ["native", "rhel-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {
@@ -55,6 +57,13 @@ model Institution {
   sourceType     SourceType @map("source_type")
   credentials    Json
   writebackOptIn Boolean    @default(false) @map("writeback_opt_in")
+
+  // Drives the sweep scheduler. syncEnabled=false opts the institution out entirely;
+  // syncIntervalHours controls how often the sweep will re-enqueue a discovery for it.
+  syncEnabled       Boolean @default(true) @map("sync_enabled")
+  syncIntervalHours Int     @default(24)   @map("sync_interval_hours")
+  lastSyncedAt      DateTime? @map("last_synced_at")
+
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 

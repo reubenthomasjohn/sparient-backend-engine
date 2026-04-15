@@ -224,6 +224,15 @@ Batches (Internal) → Get files in a batch
 | `npm run db:seed` | Seed institution + Connectivo API key |
 | `npm run db:studio` | Open Prisma Studio (DB browser) at `localhost:5555` |
 | `npm run db:reset` | Drop and recreate the database (destructive) |
+| `make build-all` | Build all three Lambda Docker images |
+| `make push-all` | Push all three images to ECR (run `make ecr-login` first) |
+
+Scheduling is driven by two columns on `institutions`:
+
+| Column | Default | Purpose |
+|---|---|---|
+| `sync_enabled` | `true` | Set to `false` to opt an institution out of the nightly sweep entirely |
+| `sync_interval_hours` | `24` | How often the sweep re-queues a discovery for this institution |
 
 ---
 
@@ -266,8 +275,7 @@ src/
 ├── config/index.ts                    # Zod-validated env config
 ├── db/client.ts                       # Prisma singleton (pg adapter)
 ├── jobs/
-│   ├── nightlySync.job.ts             # Cron: 2 AM daily
-│   └── retry.job.ts                   # Cron: every 2 hours
+│   └── nightlySync.job.ts             # Local-dev cron: enqueues a sweep at 2 AM
 ├── queue/
 │   ├── IQueue.ts                      # Send / startConsumer / stop
 │   ├── InMemoryQueue.ts               # Dev: setInterval poller
@@ -292,8 +300,7 @@ src/
 │   │   ├── FileChangeDetector.ts      # Bumps discovered_modified_at, clears outcomes
 │   │   ├── BatchBuilder.ts            # Atomic claim via batched_modified_at
 │   │   └── SyncOrchestrator.ts        # Thin wrapper — enqueues a DiscoveryJob
-│   ├── remediation/RemediationService.ts
-│   └── retry/RetryService.ts
+│   └── remediation/RemediationService.ts
 ├── types/
 │   ├── canvas.ts
 │   ├── connectivo.ts

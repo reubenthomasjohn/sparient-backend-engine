@@ -3,7 +3,6 @@ import { config } from './config';
 import { logger } from './utils/logger';
 import prisma from './db/client';
 import { startNightlySyncJob } from './jobs/nightlySync.job';
-import { startRetryJob } from './jobs/retry.job';
 import { discoveryQueue, uploadQueue } from './queue';
 import { handleDiscoveryJob } from './workers/discovery/handler';
 import { handleUploadJob } from './workers/upload/handler';
@@ -19,7 +18,6 @@ async function bootstrap(): Promise<void> {
   });
 
   startNightlySyncJob();
-  startRetryJob();
 
   // In dev (no SQS URLs configured), the in-memory queue runs consumers in-process.
   // In prod, Lambda functions consume from SQS and QUEUE_START_CONSUMERS=false

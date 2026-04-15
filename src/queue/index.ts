@@ -3,15 +3,17 @@ import { Queue } from './IQueue';
 import { InMemoryQueue } from './InMemoryQueue';
 import { SqsQueue } from './SqsQueue';
 
-// Enqueued by the nightly cron and manual /sync triggers.
-export interface DiscoveryJob {
-  institutionId: string;
-  courseId?: string;   // Canvas course ID; if omitted, every active-term course is synced
-  force?: boolean;
-}
+// Two message shapes on the discovery queue:
+//   sweep   — once a day (EventBridge in prod, node-cron locally). The handler fans out
+//             per-institution discovery jobs and re-queues retry-eligible files.
+//   discover — one per institution (enqueued by sweep or by /sync API routes).
+export type DiscoveryJob =
+  | { type: 'sweep' }
+  | { type: 'discover'; institutionId: string; courseId?: string; force?: boolean };
 
-// Enqueued by the discovery worker and the retry job. The modifiedAt is the signal
-// this message is tied to — workers drop the message if discoveredModifiedAt has since advanced.
+// Enqueued by the discovery worker and by the sweep (for retry-eligible files).
+// The modifiedAt is the signal this message is tied to — workers drop the message
+// if discoveredModifiedAt has since advanced.
 export interface UploadJob {
   sourceFileId: string;
   modifiedAtMs: number;

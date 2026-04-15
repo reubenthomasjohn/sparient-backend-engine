@@ -1,11 +1,11 @@
 import cron from 'node-cron';
-import prisma from '../db/client';
-import { SyncOrchestrator } from '../services/sync/SyncOrchestrator';
+import { discoveryQueue } from '../queue';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 
-const orchestrator = new SyncOrchestrator();
-
+// Local-dev only. In prod EventBridge puts the same `sweep` message on SQS directly.
+// The sweep handler (src/workers/discovery/handler.ts) decides which institutions are
+// due and also re-queues retry-eligible files.
 export function startNightlySyncJob(): void {
   const schedule = config.jobs.syncCronSchedule;
 
@@ -15,25 +15,13 @@ export function startNightlySyncJob(): void {
   }
 
   cron.schedule(schedule, async () => {
-    logger.info('Nightly sync job: starting');
-
-    const institutions = await prisma.institution.findMany();
-
-    logger.info('Nightly sync job: institutions to sync', { count: institutions.length });
-
-    for (const institution of institutions) {
-      try {
-        await orchestrator.syncInstitution(institution.id);
-      } catch (err) {
-        logger.error('Nightly sync job: institution sync failed', {
-          institutionId: institution.id,
-          error: err,
-        });
-      }
+    logger.info('Nightly sweep: enqueueing');
+    try {
+      await discoveryQueue.send({ type: 'sweep' });
+    } catch (err) {
+      logger.error('Nightly sweep: enqueue failed', { error: err });
     }
-
-    logger.info('Nightly sync job: complete');
   });
 
-  logger.info('Nightly sync job scheduled', { schedule });
+  logger.info('Nightly sweep scheduled', { schedule });
 }
