@@ -1,12 +1,10 @@
-# Two queues, two DLQs. Visibility timeout = 15 min so a slow upload doesn't get redelivered
-# while still running. Messages that fail maxReceiveCount times land in the DLQ and stay
-# there until an operator inspects them — there's no automatic retry off the DLQ.
+# Discovery queue + DLQ. Upload fan-out is handled by Step Functions, not SQS.
 
 variable "name_prefix" { type = string }
 
 variable "visibility_timeout_seconds" {
   type    = number
-  default = 900 # 15 min — must be >= Lambda timeout
+  default = 900
 }
 
 variable "max_receive_count" {
@@ -14,28 +12,20 @@ variable "max_receive_count" {
   default = 3
 }
 
-locals {
-  queue_names = ["discovery", "upload"]
+resource "aws_sqs_queue" "discovery_dlq" {
+  name                      = "${var.name_prefix}-discovery-dlq"
+  message_retention_seconds = 1209600
 }
 
-resource "aws_sqs_queue" "dlq" {
-  for_each                  = toset(local.queue_names)
-  name                      = "${var.name_prefix}-${each.key}-dlq"
-  message_retention_seconds = 1209600 # 14d max
-}
-
-resource "aws_sqs_queue" "main" {
-  for_each                   = toset(local.queue_names)
-  name                       = "${var.name_prefix}-${each.key}"
+resource "aws_sqs_queue" "discovery" {
+  name                       = "${var.name_prefix}-discovery"
   visibility_timeout_seconds = var.visibility_timeout_seconds
   redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.dlq[each.key].arn
+    deadLetterTargetArn = aws_sqs_queue.discovery_dlq.arn
     maxReceiveCount     = var.max_receive_count
   })
 }
 
-output "discovery_queue_url" { value = aws_sqs_queue.main["discovery"].url }
-output "upload_queue_url"    { value = aws_sqs_queue.main["upload"].url }
-output "discovery_queue_arn" { value = aws_sqs_queue.main["discovery"].arn }
-output "upload_queue_arn"    { value = aws_sqs_queue.main["upload"].arn }
-output "all_queue_arns"      { value = [for q in aws_sqs_queue.main : q.arn] }
+output "discovery_queue_url" { value = aws_sqs_queue.discovery.url }
+output "discovery_queue_arn" { value = aws_sqs_queue.discovery.arn }
+output "all_queue_arns"      { value = [aws_sqs_queue.discovery.arn] }

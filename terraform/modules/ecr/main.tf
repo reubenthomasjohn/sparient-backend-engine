@@ -4,7 +4,7 @@ variable "name_prefix" { type = string }
 
 variable "repo_names" {
   type    = list(string)
-  default = ["sparient-api", "sparient-discovery", "sparient-upload", "sparient-responses"]
+  default = ["sparient-api", "sparient-discovery", "sparient-course-workflow", "sparient-responses"]
 }
 
 resource "aws_ecr_repository" "this" {

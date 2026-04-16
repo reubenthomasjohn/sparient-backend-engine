@@ -29,18 +29,16 @@ env:
   #
   # Secrets:
   #   NEON_API_KEY     = napi_...
-  #
-  # S3 bucket names + github_repo_name are in terraform.tfvars (committed, no secrets).
 
 jobs:
-  # 1. Terraform — creates/updates all infrastructure.
+  # 1. Terraform
   terraform:
     runs-on: ubuntu-latest
     outputs:
-      ecr_api:       ${{ steps.ecr.outputs.api }}
-      ecr_discovery: ${{ steps.ecr.outputs.discovery }}
-      ecr_upload:    ${{ steps.ecr.outputs.upload }}
-      ecr_responses: ${{ steps.ecr.outputs.responses }}
+      ecr_api:             ${{ steps.ecr.outputs.api }}
+      ecr_discovery:       ${{ steps.ecr.outputs.discovery }}
+      ecr_course_workflow: ${{ steps.ecr.outputs.course_workflow }}
+      ecr_responses:       ${{ steps.ecr.outputs.responses }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,12 +69,10 @@ jobs:
         run: |
           echo "api=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-api"]')" >> "$GITHUB_OUTPUT"
           echo "discovery=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-discovery"]')" >> "$GITHUB_OUTPUT"
-          echo "upload=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-upload"]')" >> "$GITHUB_OUTPUT"
+          echo "course_workflow=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-course-workflow"]')" >> "$GITHUB_OUTPUT"
           echo "responses=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-responses"]')" >> "$GITHUB_OUTPUT"
 
-  # 2. Run Prisma migrations against Neon.
-  #    Fetches the connection URI from terraform output directly (avoids passing the
-  #    password through inter-job outputs where it could be logged).
+  # 2. Prisma migrations
   migrate:
     needs: terraform
     runs-on: ubuntu-latest
@@ -118,7 +114,7 @@ jobs:
           cd ../../..
           npx prisma migrate deploy
 
-  # 3. Build all 4 images in parallel (after migrations are applied).
+  # 3. Build images (4 Lambdas)
   build:
     needs: [terraform, migrate]
     runs-on: ubuntu-latest
@@ -132,9 +128,9 @@ jobs:
           - name: discovery
             entry: workers/discovery/lambda
             ecr_output: ecr_discovery
-          - name: upload
-            entry: workers/upload/lambda
-            ecr_output: ecr_upload
+          - name: course-workflow
+            entry: workers/course/lambda
+            ecr_output: ecr_course_workflow
           - name: responses
             entry: workers/responses/lambda
             ecr_output: ecr_responses
@@ -162,7 +158,7 @@ jobs:
           docker push $ECR_URI:${{ github.sha }}
           docker push $ECR_URI:latest
 
-  # 4. Update all 4 Lambdas after images are pushed.
+  # 4. Update Lambdas
   deploy:
     needs: [terraform, build]
     runs-on: ubuntu-latest
@@ -174,8 +170,8 @@ jobs:
             ecr_output: ecr_api
           - function: sparient-dev-discovery
             ecr_output: ecr_discovery
-          - function: sparient-dev-upload
-            ecr_output: ecr_upload
+          - function: sparient-dev-course-workflow
+            ecr_output: ecr_course_workflow
           - function: sparient-dev-responses
             ecr_output: ecr_responses
     steps:

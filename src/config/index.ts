@@ -23,6 +23,7 @@ const configSchema = z.object({
     s3RemediatedBucket: z.string().min(1, 'S3_REMEDIATED_BUCKET is required'),
     s3RequestsBucket: z.string().min(1, 'S3_REQUESTS_BUCKET is required'),
     s3ResponsesBucket: z.string().min(1, 'S3_RESPONSES_BUCKET is required'),
+    courseWorkflowArn: z.string().optional(), // SFN state machine ARN — set in prod, unset in local dev
   }),
   jobs: z.object({
     retryBaseDelayMinutes: z.coerce.number().default(30),
@@ -31,7 +32,6 @@ const configSchema = z.object({
   // Local dev can leave these unset — the consumers are started by server.ts.
   queue: z.object({
     discoveryUrl: z.string().optional(),
-    uploadUrl: z.string().optional(),
     startConsumers: z.coerce.boolean().default(true),
   }),
 });
@@ -53,13 +53,13 @@ const parsed = configSchema.safeParse({
     s3RemediatedBucket: process.env.S3_REMEDIATED_BUCKET,
     s3RequestsBucket: process.env.S3_REQUESTS_BUCKET,
     s3ResponsesBucket: process.env.S3_RESPONSES_BUCKET,
+    courseWorkflowArn: process.env.COURSE_WORKFLOW_ARN,
   },
   jobs: {
     retryBaseDelayMinutes: process.env.RETRY_BASE_DELAY_MINUTES,
   },
   queue: {
     discoveryUrl: process.env.SQS_DISCOVERY_URL,
-    uploadUrl: process.env.SQS_UPLOAD_URL,
     startConsumers: process.env.QUEUE_START_CONSUMERS,
   },
 });

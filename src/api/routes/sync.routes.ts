@@ -7,8 +7,8 @@ const router = Router();
 const syncOrchestrator = new SyncOrchestrator();
 
 // POST /sync/institutions/:institutionId?force=true
-// ?force=true clears lastSyncedAt and rewinds discovered_modified_at so the next
-// discovery treats every file as changed.
+// Enqueues a discover message. The discovery Lambda lists courses and starts one
+// Step Functions execution per course.
 router.post(
   '/institutions/:institutionId',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -28,7 +28,7 @@ router.post(
         logger.info('Sync: forced full re-sync', { institutionId });
       }
 
-      await syncOrchestrator.syncInstitution(institutionId, undefined, force);
+      await syncOrchestrator.syncInstitution(institutionId, force);
       res.json({ success: true, message: force ? 'Full re-sync enqueued' : 'Sync enqueued', institutionId });
     } catch (err) {
       next(err);
@@ -37,6 +37,7 @@ router.post(
 );
 
 // POST /sync/institutions/:institutionId/courses/:courseId?force=true
+// Starts a Step Functions execution for a single course directly.
 router.post(
   '/institutions/:institutionId/courses/:courseId',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -59,13 +60,13 @@ router.post(
           where: { courseId: { in: courseIds } },
           data: { discoveredModifiedAt: new Date(0) },
         });
-        logger.info('Sync: forced full re-sync', { institutionId, courseId });
+        logger.info('Sync: forced course re-sync', { institutionId, courseId });
       }
 
-      await syncOrchestrator.syncInstitution(institutionId, courseId, force);
+      await syncOrchestrator.syncCourse(institutionId, courseId, force);
       res.json({
         success: true,
-        message: force ? 'Full re-sync enqueued' : 'Course sync enqueued',
+        message: force ? 'Full re-sync started' : 'Course sync started',
         institutionId,
         courseId,
       });

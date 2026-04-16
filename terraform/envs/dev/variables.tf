@@ -41,11 +41,6 @@ variable "discovery_max_concurrency" {
   default = 5
 }
 
-variable "upload_max_concurrency" {
-  type    = number
-  default = 10
-}
-
 # Provisioned concurrency on the API Lambda (1 warm instance ≈ $5/mo at 1 GB).
 variable "api_provisioned_concurrency" {
   type    = number
