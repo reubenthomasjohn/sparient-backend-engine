@@ -31,7 +31,6 @@ enum WritebackState {
 
 enum BatchStatus {
   pending
-  processing
   completed
   completed_with_warnings
   failed
@@ -67,9 +66,8 @@ model Institution {
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 
-  courses           Course[]
-  batches           Batch[]
-  connectivoApiKeys ConnectivoApiKey[]
+  courses Course[]
+  batches Batch[]
 
   @@map("institutions")
 }
@@ -143,11 +141,16 @@ model Batch {
   id                String      @id @default(uuid())
   institutionId     String      @map("institution_id")
   courseId          String      @map("course_id")
+  // Their internal UUID. Populated when we receive their response.json (kept for audit
+  // / log correlation). The matching key for response → batch is the S3 file path,
+  // not this column.
   connectivoBatchId String?     @map("connectivo_batch_id") @db.VarChar(255)
   status            BatchStatus @default(pending)
   isInitialSync     Boolean     @default(false) @map("is_initial_sync")
   isRetry           Boolean     @default(false) @map("is_retry")
-  acknowledgedAt    DateTime?   @map("acknowledged_at")
+  requestS3Bucket   String?     @map("request_s3_bucket") @db.VarChar(255)
+  requestS3Key      String?     @map("request_s3_key") @db.VarChar(1000)
+  requestWrittenAt  DateTime?   @map("request_written_at")
   completedAt       DateTime?   @map("completed_at")
   totalFiles        Int         @default(0) @map("total_files")
   totalPages        Int?        @map("total_pages")
@@ -212,20 +215,3 @@ model FileIssueCategory {
   @@map("file_issue_categories")
 }
 
-// institutionId = NULL → global key (legacy behaviour; can access all institutions).
-// institutionId set → key is scoped; middleware rejects any cross-institution access.
-model ConnectivoApiKey {
-  id            String    @id @default(uuid())
-  institutionId String?   @map("institution_id")
-  name          String    @db.VarChar(255)
-  keyHash       String    @unique @map("key_hash") @db.VarChar(255)
-  isActive      Boolean   @default(true) @map("is_active")
-  lastUsedAt    DateTime? @map("last_used_at")
-  expiresAt     DateTime? @map("expires_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
-
-  institution Institution? @relation(fields: [institutionId], references: [id])
-
-  @@index([institutionId])
-  @@map("connectivo_api_keys")
-}

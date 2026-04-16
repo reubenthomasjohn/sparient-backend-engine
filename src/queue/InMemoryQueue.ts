@@ -35,4 +35,21 @@ export class InMemoryQueue<T> implements Queue<T> {
     if (this.interval) clearInterval(this.interval);
     this.interval = null;
   }
+
+  // Drain every pending message by running `handler` against it, including messages
+  // enqueued *during* draining. Used by the monolith Lambda to process work inline
+  // within a single invocation (no background consumer — Lambda freezes after return).
+  async drain(handler: MessageHandler<T>): Promise<void> {
+    let msg = this.buffer.shift();
+    while (msg !== undefined) {
+      try {
+        await handler(msg);
+      } catch (err) {
+        logger.error(`InMemoryQueue(${this.name}): handler threw during drain`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      msg = this.buffer.shift();
+    }
+  }
 }

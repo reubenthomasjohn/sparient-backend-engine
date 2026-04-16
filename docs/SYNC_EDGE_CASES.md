@@ -107,7 +107,7 @@ Replaying `POST /results` with the same `connectivo_batch_id` on an already-term
 Content change clears `last_outcome` and retry counters; the file re-enters the normal path with the new content.
 
 ### 6.3 Retry cadence — ⚠️ Daily only
-Retries are driven by the daily sweep (EventBridge in prod, node-cron locally), not a dedicated every-2h job. A file that fails at 3am waits until ~2am the next day for another attempt unless its Canvas content changes first. Acceptable for accessibility workloads; if faster retries become important, add a second EventBridge rule firing every N hours that also enqueues a `sweep` message.
+Retries are driven by the daily sweep (EventBridge in prod). Local dev has no scheduled sweep — trigger manually by POSTing to the sync routes (or by enqueueing a `{type:'sweep'}` message via a REPL). A file that fails at 3am in prod waits until ~2am the next day for another attempt unless its Canvas content changes first. Acceptable for accessibility workloads; if faster retries become important, add a second EventBridge rule firing every N hours that also enqueues a `sweep` message.
 
 ---
 

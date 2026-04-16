@@ -44,6 +44,7 @@ async function runSweep(): Promise<void> {
   });
 
   await sweepRetries();
+  await sweepUnpublishedBatches();
 
   logger.info('Discovery sweep: complete');
 }
@@ -84,7 +85,7 @@ async function sweepRetries(): Promise<void> {
     // Clear outcome + batched pin; next per-institution discovery pass will re-batch these.
     await prisma.sourceFile.updateMany({
       where: { id: { in: needBatch.map((f) => f.id) } },
-      data: { lastOutcome: null, batchedModifiedAt: null, nextRetryAt: null },
+      data: { lastOutcome: null, batchedModifiedAt: null, nextRetryAt: null, lastFailureReason: null },
     });
   }
 
@@ -92,6 +93,32 @@ async function sweepRetries(): Promise<void> {
     reuploads: needUpload.length,
     rebatches: needBatch.length,
   });
+}
+
+// Catches batches where the DB claim succeeded but S3 publish failed AND the rollback
+// also failed (double fault). These batches are pending with requestWrittenAt=null.
+// We release the claimed files so they become eligible again.
+async function sweepUnpublishedBatches(): Promise<void> {
+  const stuck = await prisma.batch.findMany({
+    where: { status: 'pending', requestWrittenAt: null },
+    include: { batchFiles: true },
+  });
+
+  if (stuck.length === 0) return;
+
+  for (const batch of stuck) {
+    const fileIds = batch.batchFiles.map((bf) => bf.sourceFileId);
+    await prisma.sourceFile.updateMany({
+      where: { id: { in: fileIds } },
+      data: { batchedModifiedAt: null },
+    });
+    await prisma.batch.update({
+      where: { id: batch.id },
+      data: { status: 'failed' },
+    });
+  }
+
+  logger.info('Discovery sweep: released unpublished batches', { count: stuck.length });
 }
 
 // Runs per-institution. Courses are upserted from the source system, then each eligible

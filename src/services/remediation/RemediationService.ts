@@ -1,4 +1,4 @@
-import { BatchStatus, ConnectivoFileState, LastOutcome, QualityLabel } from '@prisma/client';
+import { BatchStatus, ConnectivoFileState, QualityLabel } from '@prisma/client';
 import prisma from '../../db/client';
 import { ConnectivoResultsPayload } from '../../types/connectivo';
 import { logger } from '../../utils/logger';
@@ -21,12 +21,9 @@ const QUALITY_MAP: Record<string, QualityLabel> = {
 const TERMINAL_BATCH_STATUSES: BatchStatus[] = ['completed', 'completed_with_warnings', 'failed'];
 
 export class RemediationService {
-  async handleResults(
-    batchId: string,
-    payload: ConnectivoResultsPayload,
-    // null → global key (unscoped); string → scoped key, batch must belong to this institution
-    authInstitutionId: string | null,
-  ): Promise<void> {
+  // Called by the responses Lambda after fetching response.json from S3. The S3 path
+  // (which contains our batchId) is the matching key — institution scoping is implicit.
+  async handleResults(batchId: string, payload: ConnectivoResultsPayload): Promise<void> {
     const batch = await prisma.batch.findUnique({
       where: { id: batchId },
       include: { batchFiles: { include: { sourceFile: true } } },
@@ -34,28 +31,11 @@ export class RemediationService {
 
     if (!batch) throw Errors.notFound('Batch');
 
-    // Cross-institution check: a scoped key cannot touch another institution's batch.
-    if (authInstitutionId !== null && batch.institutionId !== authInstitutionId) {
-      throw Errors.forbidden('Batch does not belong to the authenticated institution');
-    }
-
-    // Idempotent duplicate-delivery handling. Connectivo retries on network blip;
-    // a second POST with the same connectivo_batch_id against an already-terminal batch
-    // returns 200 quietly rather than 409.
+    // Idempotent re-delivery (S3 events can fire twice; Connectivo can re-write).
+    // A second response for an already-terminal batch is a no-op.
     if (TERMINAL_BATCH_STATUSES.includes(batch.status)) {
-      if (batch.connectivoBatchId === payload.batch.id) {
-        logger.info('RemediationService: duplicate delivery, acknowledging', { batchId });
-        return;
-      }
-      throw Errors.conflict(
-        `Batch is in status '${batch.status}' and was processed by a different external batch id`,
-      );
-    }
-
-    if (batch.status !== 'processing') {
-      throw Errors.conflict(
-        `Batch must be acknowledged before results can be submitted (current: ${batch.status})`,
-      );
+      logger.info('RemediationService: batch already terminal, ignoring re-delivery', { batchId });
+      return;
     }
 
     logger.info('RemediationService: processing results', {
@@ -165,6 +145,3 @@ export class RemediationService {
     logger.info('RemediationService: results processed', { batchId });
   }
 }
-
-// Re-exported so callers don't need to reach into @prisma/client just for the type.
-export type { LastOutcome };

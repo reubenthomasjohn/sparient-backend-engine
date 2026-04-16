@@ -1,16 +1,11 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { createHash, randomBytes } from 'crypto';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
-
-function hashKey(key: string): string {
-  return createHash('sha256').update(key).digest('hex');
-}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -62,47 +57,11 @@ async function main(): Promise<void> {
   console.log(`  ID:   ${institution.id}`);
   console.log(`  Slug: ${institution.slug}\n`);
 
-  // ── Connectivo API Key ─────────────────────────────────────────────────────
+  // Connectivo no longer uses an API; the integration is via the request/response S3
+  // buckets. Nothing to seed here. Hand Connectivo the IAM user credentials separately.
 
-  const connectivoSecret = process.env.CONNECTIVO_API_KEY_SECRET;
-
-  let plaintextKey: string;
-  let keySource: string;
-
-  if (connectivoSecret) {
-    // Use the value from .env so it stays consistent across re-seeds
-    plaintextKey = connectivoSecret;
-    keySource = 'from CONNECTIVO_API_KEY_SECRET in .env';
-  } else {
-    // Generate a fresh key — only happens if the env var isn't set
-    plaintextKey = randomBytes(32).toString('hex');
-    keySource = 'randomly generated (not in .env — save this now)';
-  }
-
-  const keyHash = hashKey(plaintextKey);
-
-  await prisma.connectivoApiKey.upsert({
-    where: { keyHash },
-    create: {
-      name:    'Connectivo',
-      keyHash,
-      isActive: true,
-    },
-    update: {
-      isActive: true,
-    },
-  });
-
-  console.log('Connectivo API Key');
-  console.log(`  Source:   ${keySource}`);
-  console.log(`  Key:      ${plaintextKey}`);
-  console.log('  (Give this key to Connectivo — it is never stored in plaintext)\n');
-
-  // ── Quick-reference ────────────────────────────────────────────────────────
-
-  console.log('Copy these into your Postman collection variables:');
-  console.log(`  institutionId:    ${institution.id}`);
-  console.log(`  connectivoApiKey: ${plaintextKey}`);
+  console.log('Copy this into your Postman collection variable:');
+  console.log(`  institutionId: ${institution.id}`);
 }
 
 main()

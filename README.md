@@ -224,9 +224,6 @@ Batches (Internal) → Get files in a batch
 | `npm run db:seed` | Seed institution + Connectivo API key |
 | `npm run db:studio` | Open Prisma Studio (DB browser) at `localhost:5555` |
 | `npm run db:reset` | Drop and recreate the database (destructive) |
-| `make build-all` | Build all three Lambda Docker images |
-| `make push-all` | Push all three images to ECR (run `make ecr-login` first) |
-
 Scheduling is driven by two columns on `institutions`:
 
 | Column | Default | Purpose |
@@ -274,8 +271,6 @@ src/
 │       └── batches.routes.ts
 ├── config/index.ts                    # Zod-validated env config
 ├── db/client.ts                       # Prisma singleton (pg adapter)
-├── jobs/
-│   └── nightlySync.job.ts             # Local-dev cron: enqueues a sweep at 2 AM
 ├── queue/
 │   ├── IQueue.ts                      # Send / startConsumer / stop
 │   ├── InMemoryQueue.ts               # Dev: setInterval poller
@@ -320,6 +315,15 @@ docker-compose.yml
 ```
 
 ---
+
+## Deployment
+
+AWS deployment is defined under `terraform/` (VPC + RDS + RDS Proxy + SQS + 3 Lambdas + API Gateway + EventBridge sweep). See:
+
+- `docs/ARCHITECTURE.md` — diagrams, component choices, cost breakdown.
+- `terraform/README.md` — bring-up walkthrough and per-module layout.
+
+Images are built and pushed by GitHub Actions CI (`.github/workflows/deploy-*.yml`). See `terraform/README.md` for the bring-up flow.
 
 ## Adding a New Source (e.g. SharePoint)
 

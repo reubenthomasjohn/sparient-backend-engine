@@ -1,0 +1,13 @@
+region      = "us-east-2"
+name_prefix = "sparient-dev"
+
+# Existing buckets
+s3_source_bucket     = "your-source-bucket-name"
+s3_remediated_bucket = "your-remediated-bucket-name"
+
+# CI/CD
+github_repo_name = "sparient-backend-engine"
+
+# NOTE: neon_api_key is NOT in this file.
+# Pass via: export TF_VAR_neon_api_key=napi_...
+# In CI: pulled from GitHub Actions secret NEON_API_KEY.

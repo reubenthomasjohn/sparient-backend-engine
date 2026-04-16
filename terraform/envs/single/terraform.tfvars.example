@@ -1,0 +1,18 @@
+region      = "us-east-2"
+name_prefix = "sparient-single"
+
+# Existing S3 buckets.
+s3_source_bucket     = "your-source-bucket-name"
+s3_remediated_bucket = "your-remediated-bucket-name"
+
+# Owner defaults to "reubenthomasjohn" — override here if forking.
+# github_owner = "reubenthomasjohn"
+
+github_repo_name = "sparient-backend-engine"
+
+# Branch that the CI workflow deploys from. Defaults to "slim/repo".
+# github_deploy_branch = "slim/repo"
+
+# NOTE: neon_api_key is intentionally NOT in this file.
+# Pass it via environment variable instead:
+#   export TF_VAR_neon_api_key=napi_...

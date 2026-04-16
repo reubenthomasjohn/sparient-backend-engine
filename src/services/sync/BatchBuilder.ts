@@ -1,5 +1,6 @@
 import { Batch, Course, Institution, SourceFile } from '@prisma/client';
 import prisma from '../../db/client';
+import { requestPublisher } from '../remediation/RequestPublisher';
 import { logger } from '../../utils/logger';
 
 export interface BuildOptions {
@@ -16,18 +17,26 @@ export class BatchBuilder {
     course: Course,
     options: BuildOptions = {},
   ): Promise<Batch | null> {
-    // Cross-column comparison — Prisma's findMany can't express it, so raw SQL.
-    const eligible = await prisma.$queryRaw<SourceFile[]>`
-      SELECT *
-      FROM source_files
-      WHERE course_id = ${course.id}::uuid
-        AND s3_source_key IS NOT NULL
-        AND s3_source_modified_at IS NOT NULL
-        AND (last_outcome IS NULL
-             OR last_outcome NOT IN ('deleted', 'permanently_failed'))
-        AND (batched_modified_at IS NULL
-             OR s3_source_modified_at > batched_modified_at)
-    `;
+    // Pull every potentially-eligible file for the course, then filter the cross-column
+    // condition in JS. Done this way (vs $queryRaw) because raw queries return snake_case
+    // column names, and the per-course row count is small enough that the JS filter is cheap.
+    const candidates = await prisma.sourceFile.findMany({
+      where: {
+        courseId: course.id,
+        s3SourceKey: { not: null },
+        s3SourceModifiedAt: { not: null },
+        OR: [
+          { lastOutcome: null },
+          { lastOutcome: { notIn: ['deleted', 'permanently_failed'] } },
+        ],
+      },
+    });
+
+    const eligible = candidates.filter(
+      (f) =>
+        f.batchedModifiedAt === null ||
+        f.s3SourceModifiedAt!.getTime() > f.batchedModifiedAt.getTime(),
+    );
 
     if (eligible.length === 0) return null;
 
@@ -82,6 +91,26 @@ export class BatchBuilder {
       fileCount: claimed.length,
       ...options,
     });
+
+    // Hand off to Connectivo by writing the per-batch request.json. If this fails,
+    // roll back the claim so the files become eligible again on the next sync pass.
+    try {
+      await requestPublisher.publish(batch, institution, course);
+    } catch (err) {
+      logger.error('BatchBuilder: request publish failed, rolling back claim', {
+        batchId: batch.id,
+        error: err,
+      });
+      await prisma.sourceFile.updateMany({
+        where: { id: { in: claimed.map((f) => f.id) } },
+        data: { batchedModifiedAt: null },
+      });
+      await prisma.batch.update({
+        where: { id: batch.id },
+        data: { status: 'failed' },
+      });
+      return null;
+    }
 
     return batch;
   }
