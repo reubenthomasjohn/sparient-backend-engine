@@ -40,7 +40,7 @@ resource "aws_lambda_function" "this" {
   role          = var.role_arn
   package_type  = "Image"
   image_uri     = "${var.ecr_repo_url}:bootstrap"
-  architectures = ["arm64"]
+  architectures = ["x86_64"]
   timeout       = var.timeout_seconds
   memory_size   = var.memory_mb
 

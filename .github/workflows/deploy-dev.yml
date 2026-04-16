@@ -141,20 +141,17 @@ jobs:
       - name: Log in to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Build + push
         env:
           ECR_URI: ${{ needs.terraform.outputs[matrix.ecr_output] }}
         run: |
-          docker buildx build \
+          docker build \
             -f Dockerfile.lambda \
-            --platform linux/arm64 \
             --build-arg LAMBDA_ENTRY=${{ matrix.entry }} \
             -t $ECR_URI:${{ github.sha }} \
-            -t $ECR_URI:latest \
-            --push .
+            -t $ECR_URI:latest .
+          docker push $ECR_URI:${{ github.sha }}
+          docker push $ECR_URI:latest
 
   # 4. Update all 4 Lambdas after images are pushed.
   deploy:

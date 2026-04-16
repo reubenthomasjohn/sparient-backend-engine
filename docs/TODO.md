@@ -8,6 +8,14 @@ Currently the full `DATABASE_URL` (including password) is baked into Lambda env 
 
 The dev CI role has `AdministratorAccess`. For prod, replace with a scoped policy covering only the services Terraform manages (VPC, RDS, SQS, Lambda, ECR, API Gateway, EventBridge, S3, IAM, CloudWatch, Secrets Manager, SSM).
 
+## Switch Lambda to arm64 (Graviton)
+
+Currently using x86_64 because the GitHub Actions free tier (private repos) doesn't include native ARM runners, and QEMU cross-compilation crashes during `npm ci` (Prisma engine binary). Once on a GitHub Pro/Team plan or using self-hosted ARM runners:
+- Change `architectures = ["x86_64"]` → `["arm64"]` in both Lambda modules
+- Add `linux-arm64-openssl-3.0.x` back to Prisma `binaryTargets`
+- Use `ubuntu-24.04-arm` runner in the CI workflow
+- Benefit: ~20% cheaper Lambda runtime + ~15% faster cold starts
+
 ## Enable API Lambda provisioned concurrency
 
 Currently disabled (`api_provisioned_concurrency = 0`) because the AWS account's unreserved concurrency limit is too low (default 10 for new accounts). Provisioned concurrency reserves capacity from this pool, and AWS won't let it drop below 10 unreserved.

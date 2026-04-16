@@ -1,7 +1,7 @@
 generator client {
   provider      = "prisma-client-js"
-  // Native = local dev (mac/linux). rhel + arm64 = AWS Lambda (Amazon Linux 2023, Graviton).
-  binaryTargets = ["native", "rhel-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
+  // Native = local dev (mac/linux). rhel = AWS Lambda (Amazon Linux 2023, x86_64).
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {

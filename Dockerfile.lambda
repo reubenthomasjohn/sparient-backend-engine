@@ -4,7 +4,7 @@
 # Build example:
 #   docker build -f Dockerfile.lambda \
 #     --build-arg LAMBDA_ENTRY=workers/api/lambda \
-#     --platform linux/arm64 -t sparient-api:latest .
+#     -t sparient-api:latest .
 
 ARG LAMBDA_ENTRY
 
