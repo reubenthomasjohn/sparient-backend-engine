@@ -198,6 +198,8 @@ crash.*.log
 # to change depending on the environment.
 *.tfvars
 *.tfvars.json
+# But allow our committed dev tfvars (no secrets — just bucket names + repo config)
+!terraform/envs/dev/terraform.tfvars
 
 # Ignore override files as they are usually used to override resources locally and so
 # are not checked in
