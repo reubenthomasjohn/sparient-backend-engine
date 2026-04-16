@@ -11,6 +11,9 @@ import { logger } from './utils/logger';
 
 const app = express();
 
+// Trust the first proxy (API Gateway / ALB) so X-Forwarded-For is used for rate limiting.
+app.set('trust proxy', 1);
+
 // Security headers
 app.use(helmet());
 
