@@ -4,11 +4,10 @@ import { InMemoryQueue } from './InMemoryQueue';
 import { SqsQueue } from './SqsQueue';
 
 // Two message shapes on the discovery queue:
-//   sweep   — once a day (EventBridge in prod, node-cron locally). The handler fans out
-//             per-institution discovery jobs and re-queues retry-eligible files.
-//   discover — one per institution (enqueued by sweep or by /sync API routes).
+//   tick     — every 15 min (EventBridge). Checks which institutions are due → enqueues discovers.
+//   discover — per institution or per course (enqueued by tick or by /sync API routes).
 export type DiscoveryJob =
-  | { type: 'sweep' }
+  | { type: 'tick' }
   | { type: 'discover'; institutionId: string; courseId?: string; force?: boolean };
 
 // Enqueued by the discovery worker and by the sweep (for retry-eligible files).

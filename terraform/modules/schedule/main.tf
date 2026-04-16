@@ -8,11 +8,11 @@ variable "target_queue_url" { type = string }
 
 variable "schedule" {
   type    = string
-  default = "cron(0 2 * * ? *)" # 02:00 UTC daily
+  default = "rate(15 minutes)"
 }
 
-resource "aws_cloudwatch_event_rule" "sweep" {
-  name                = "${var.name_prefix}-nightly-sweep"
+resource "aws_cloudwatch_event_rule" "tick" {
+  name                = "${var.name_prefix}-tick"
   schedule_expression = var.schedule
 }
 
@@ -28,7 +28,7 @@ data "aws_iam_policy_document" "allow_events_to_sqs" {
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
-      values   = [aws_cloudwatch_event_rule.sweep.arn]
+      values   = [aws_cloudwatch_event_rule.tick.arn]
     }
   }
 }
@@ -39,8 +39,8 @@ resource "aws_sqs_queue_policy" "allow_events" {
 }
 
 resource "aws_cloudwatch_event_target" "sqs" {
-  rule      = aws_cloudwatch_event_rule.sweep.name
+  rule      = aws_cloudwatch_event_rule.tick.name
   target_id = "discovery-queue"
   arn       = var.target_queue_arn
-  input     = jsonencode({ type = "sweep" })
+  input     = jsonencode({ type = "tick" })
 }
