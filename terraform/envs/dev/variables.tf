@@ -8,6 +8,12 @@ variable "aws_profile" {
   default = "sparient"
 }
 
+# Set to false in CI (OIDC provides credentials, no profile needed).
+variable "use_aws_profile" {
+  type    = bool
+  default = true
+}
+
 variable "name_prefix" {
   type    = string
   default = "sparient-dev"

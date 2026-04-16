@@ -54,7 +54,7 @@ jobs:
         working-directory: terraform/envs/dev
         env:
           TF_VAR_neon_api_key: ${{ secrets.NEON_API_KEY }}
-        run: terraform apply -auto-approve -input=false
+        run: terraform apply -auto-approve -input=false -var="use_aws_profile=false"
 
       - name: Export ECR repo URLs
         id: ecr
