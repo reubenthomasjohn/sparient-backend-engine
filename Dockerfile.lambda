@@ -28,7 +28,7 @@ RUN npx prisma generate
 RUN npx --yes esbuild@0.21.5 \
       "src/${LAMBDA_ENTRY}.ts" \
       --bundle --platform=node --target=node20 \
-      --external:@prisma/client --external:.prisma/client \
+      --external:@prisma/client --external:@prisma/* --external:.prisma/client \
       --outfile=dist/index.js
 
 # ---------- runtime stage ----------
@@ -38,8 +38,8 @@ ARG LAMBDA_ENTRY
 # Bundled handler.
 COPY --from=build /build/dist/index.js ${LAMBDA_TASK_ROOT}/index.js
 
-# Prisma generated client + engine binary (single arch — set at build time via --platform).
+# Prisma generated client + engine binary + runtime utils.
 COPY --from=build /build/node_modules/.prisma ${LAMBDA_TASK_ROOT}/node_modules/.prisma
-COPY --from=build /build/node_modules/@prisma/client ${LAMBDA_TASK_ROOT}/node_modules/@prisma/client
+COPY --from=build /build/node_modules/@prisma ${LAMBDA_TASK_ROOT}/node_modules/@prisma
 
 CMD ["index.handler"]
