@@ -9,10 +9,10 @@ Status key: ✅ Handled · ⚠️ Partial / assumption · ❌ Unresolved
 ## 1. File discovery
 
 ### 1.1 New file added to Canvas — ✅
-Detector finds no existing row → inserts with a fresh `discovered_modified_at` → upload queued → batched.
+Detector finds no existing row → inserts with a fresh `discovered_modified_at` → uploaded via SFN Map → batched.
 
 ### 1.2 File content modified between syncs — ✅
-Canvas `modified_at` advances → detector bumps `discovered_modified_at` and clears `last_outcome` → upload queued → new content-addressed S3 key (old version preserved) → re-batched.
+Canvas `modified_at` advances → detector bumps `discovered_modified_at` and clears `last_outcome` → re-uploaded → new content-addressed S3 key (old version preserved) → re-batched.
 
 ### 1.3 Metadata-only change (rename, move) — ✅
 Canvas only bumps `modified_at` on content change; our detector keys off `modified_at`, so metadata churn is ignored by design.
@@ -50,10 +50,10 @@ Combined with the 1.4 mass-delete guard, an empty response never causes deletion
 ## 3. Modification during remediation
 
 ### 3.1 Modified before it reaches Connectivo — ✅
-Detector bumps `discovered_modified_at`. Upload worker re-uploads; BatchBuilder picks it up via `batched_modified_at < s3_source_modified_at`.
+Detector bumps `discovered_modified_at`. SFN re-uploads; BatchBuilder picks it up via `batched_modified_at < s3_source_modified_at`.
 
 ### 3.2 Modified *while Connectivo is processing* — ✅
-Same mechanism: `discovered_modified_at` advances past `batched_modified_at`. When Connectivo returns results for the *old* version, they're recorded as a terminal outcome, and BatchBuilder immediately re-batches the newer version on the next pass because `batched_modified_at` is still the old value. No `pending_resubmit` flag needed.
+Same mechanism: `discovered_modified_at` advances past `batched_modified_at`. When Connectivo returns results for the *old* version, they're recorded as a terminal outcome, and BatchBuilder re-batches the newer version on the next pass because `batched_modified_at` is still the old value.
 
 ### 3.3 Modified multiple times during processing — ✅
 `discovered_modified_at` is always the latest value; whatever is in S3 at batching time is what gets sent next.
@@ -69,52 +69,48 @@ Same mechanism: `discovered_modified_at` advances past `batched_modified_at`. Wh
 Detector bumps `discovered_modified_at` and clears `last_outcome` + retry counters → treated as fresh.
 
 ### 4.2 `permanently_failed` file has content change — ✅
-Same path as 4.1: content change clears `last_outcome` regardless of what it was. The old terminal outcome was for old content, so it's right to give the new content a fresh attempt.
+Same path as 4.1: content change clears `last_outcome` regardless of what it was.
 
-### 4.3 Server crashes mid-upload — ✅
-There is no transient "uploading" status to get stuck in. An interrupted upload simply leaves `s3_source_modified_at` behind `discovered_modified_at`, and any subsequent discovery or retry pass picks the file back up. The Canvas pre-signed URL is re-fetched by the upload worker before each attempt, so expiry during queue wait is also handled.
+### 4.3 Crash mid-upload — ✅
+If a Step Functions upload step fails, SFN retries it (2 attempts, 30s backoff). If all retries fail, the batch-publish step still runs — the file stays with `s3_source_modified_at` behind `discovered_modified_at` and will be re-uploaded on the next discover pass.
 
 ### 4.4 Concurrent batching of the same file — ✅
-BatchBuilder claims files with an atomic `UPDATE … WHERE batched_modified_at IS NULL OR batched_modified_at < s3_source_modified_at`. Two racing builders cannot both claim the same version.
+BatchBuilder claims files with an atomic `UPDATE … WHERE batched_modified_at IS NULL OR batched_modified_at < s3_source_modified_at`. Two racing builders cannot both claim the same version. Step Functions guarantees one batch per course per sync pass (no split batches).
 
 ---
 
 ## 5. Batch lifecycle
 
-### 5.1 Connectivo acknowledges but never submits results — ❌ Unresolved
-Nothing currently times out a `processing` batch. Planned fix: retry job resets batches where `status = 'processing' AND acknowledged_at < NOW() - interval '2 hours'` back to `pending` and clears `batched_modified_at` on their files so BatchBuilder re-claims them.
+### 5.1 Connectivo never writes a response — ⚠️ Detectable
+The `GET /api/v1/batches/stuck?olderThanHours=24` endpoint finds pending batches with `request_written_at` older than N hours. Currently observability-only; no automated remediation.
 
 ### 5.2 Partial results (some files missing) — ✅
 `RemediationService` marks any `batch_file` absent from the payload as `failed` with `error_message = 'Missing from Connectivo response'`, and writes `last_outcome = 'failed'` on the source file so it becomes retry-eligible.
 
-### 5.3 Connectivo never polls — ⚠️ Assumption
-No timeout on `pending` batches. Operational concern; add a batch-age alert later.
+### 5.3 Connectivo never polls — ⚠️ Detectable
+Same as 5.1 — the stuck-batch endpoint catches this.
 
 ### 5.4 All files in a course fail S3 upload — ✅
-No ready files → no batch. Files are retry-eligible via the retry job.
+SFN Map state returns all failures. Batch-publish step still runs but finds no eligible files → no batch created. Files remain retry-eligible for the next discover pass.
 
-### 5.5 Duplicate result POST from Connectivo — ✅
-Replaying `POST /results` with the same `connectivo_batch_id` on an already-terminal batch returns 200 as a no-op. Replaying acknowledgement is similarly idempotent.
+### 5.5 Duplicate response from Connectivo — ✅
+If Connectivo re-writes the response.json, S3 fires another event. The responses Lambda processes it and calls `RemediationService`, which sees the batch is already terminal and returns a no-op.
+
+### 5.6 Request publish fails — ✅
+BatchBuilder rolls back the claim (`batchedModifiedAt = null`, batch status `failed`). Files become eligible for the next batch. As a safety net, `releaseStuckBatches` in the batch-publish step catches any batch with `requestWrittenAt = null`.
 
 ---
 
 ## 6. Retry
 
 ### 6.1 Retry picks up a file with no S3 key — ✅
-`RetryService` splits eligible failed files: those missing `s3_source_key` go back on the upload queue; those with an S3 key have `batched_modified_at` cleared and are fed to BatchBuilder directly.
+The batch-publish step of the course workflow checks for retry-eligible failed files. Those missing `s3_source_key` will be picked up by the next discover-files → upload cycle. Those with an S3 key have `batched_modified_at` cleared so BatchBuilder re-claims them.
 
-### 6.2 Modified while in retry queue — ✅
+### 6.2 Modified while waiting for retry — ✅
 Content change clears `last_outcome` and retry counters; the file re-enters the normal path with the new content.
 
-### 6.3 Retry cadence — ⚠️ Daily only
-Retries are driven by the daily sweep (EventBridge in prod). Local dev has no scheduled sweep — trigger manually by POSTing to the sync routes (or by enqueueing a `{type:'sweep'}` message via a REPL). A file that fails at 3am in prod waits until ~2am the next day for another attempt unless its Canvas content changes first. Acceptable for accessibility workloads; if faster retries become important, add a second EventBridge rule firing every N hours that also enqueues a `sweep` message.
-
----
-
-## 7. Cross-institution authorisation
-
-### 7.1 Scoped API key attempts another institution's batch — ✅
-`apiKeyAuth` attaches `{ id, institutionId }` to `res.locals`. Routes enforce that `batch.institutionId === authInstitutionId` (or the key is global, `institutionId = NULL`) before acknowledging or accepting results.
+### 6.3 Retry cadence — ✅
+Retries happen during each course discover pass (the batch-publish step retries failed files for that course). The tick fires every 15 min; an institution is synced daily at its configured `sync_time`. Content changes trigger immediate re-processing regardless of retry state.
 
 ---
 
@@ -141,13 +137,12 @@ Retries are driven by the daily sweep (EventBridge in prod). Local dev has no sc
 | 4.2 | Modified while permanently_failed | ✅ |
 | 4.3 | Crash mid-upload | ✅ |
 | 4.4 | Concurrent batching | ✅ |
-| 5.1 | Connectivo never returns results | ❌ |
+| 5.1 | Connectivo never returns results | ⚠️ Detectable |
 | 5.2 | Partial results | ✅ |
-| 5.3 | Connectivo never polls | ⚠️ |
+| 5.3 | Connectivo never polls | ⚠️ Detectable |
 | 5.4 | All S3 uploads fail | ✅ |
-| 5.5 | Duplicate result POST | ✅ |
+| 5.5 | Duplicate response | ✅ |
+| 5.6 | Request publish fails | ✅ |
 | 6.1 | Retry with no S3 key | ✅ |
 | 6.2 | Modified in retry queue | ✅ |
-| 7.1 | Cross-institution auth | ✅ |
-
-**One unresolved flaw:** 5.1 (stuck `processing` batches). Operational for now; retry-job fix is planned.
+| 6.3 | Retry cadence | ✅ |

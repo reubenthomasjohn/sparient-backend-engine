@@ -5,32 +5,23 @@ Backend engine for pulling course files from institutional sources (Canvas, Shar
 ## Architecture Overview
 
 ```
-Manual Trigger / EventBridge (daily sweep)
+Manual Trigger / EventBridge (tick every 15 min)
         │
         ▼
   SyncOrchestrator ──► discovery queue
                           │
                           ▼
-                   Discovery Lambda (institution-level)
-                   ├── Lists Canvas courses, upserts to DB
-                   └── Fans out one message per active course
+                   Discovery Lambda
+                   ├── tick: check institution sync_time → enqueue due ones
+                   └── discover: list courses → start one SFN execution per course
                           │
                           ▼
-                   Discovery Lambda (course-level, parallel)
-                   ├── Lists Canvas files for one course
-                   ├── FileChangeDetector bumps discovered_modified_at
-                   ├── Enqueues one UploadJob per new/changed file
-                   └── BatchBuilder + RequestPublisher for files already in S3
-                          │
-                          ▼
-                      upload queue
-                          │
-                          ▼
-                    Upload Lambda
-                    ├── Re-fetches Canvas file (fresh pre-signed URL)
-                    ├── Streams to S3 (content-addressed key: v-:modifiedAtMs)
-                    ├── Conditionally UPDATEs s3_source_modified_at (monotonic)
-                    └── BatchBuilder + RequestPublisher writes request.json to S3
+                   Step Functions (per course)
+                   ├── discover-files: list Canvas files, FileChangeDetector
+                   ├── Map(upload-file, max 10): parallel uploads to S3
+                   │   waits for ALL uploads to finish
+                   └── batch-publish: BatchBuilder + RequestPublisher
+                        → one request.json per course
                           │
                           ▼
            Connectivo polls sparient-remediation-requests bucket,
@@ -220,8 +211,8 @@ Scheduling is driven by two columns on `institutions`:
 
 | Column | Default | Purpose |
 |---|---|---|
-| `sync_enabled` | `true` | Set to `false` to opt an institution out of the nightly sweep |
-| `sync_interval_hours` | `24` | How often the sweep re-queues a discovery for this institution |
+| `sync_enabled` | `true` | Set to `false` to opt an institution out of automatic syncing |
+| `sync_time` | `"02:00"` | Daily sync time in UTC (HH:MM). The tick checks every 15 min. |
 
 ---
 
@@ -274,8 +265,9 @@ src/
 │   ├── responses/
 │   │   ├── handler.ts                 # Read + validate response.json, RemediationService
 │   │   └── lambda.ts                  # SQSEvent (S3 event) → handler
-│   └── monolith/
-│       └── lambda.ts                  # Single-Lambda entry (drains queues inline)
+│   └── course/
+│       ├── handler.ts                 # All 3 SFN steps: discover-files, upload-file, batch-publish
+│       └── lambda.ts                  # Step Functions entry point (routes by step)
 ├── services/
 │   ├── sources/
 │   │   ├── ISourceClient.ts           # Interface for all source systems

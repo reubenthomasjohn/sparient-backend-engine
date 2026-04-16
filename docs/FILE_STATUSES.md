@@ -16,7 +16,7 @@ Every `source_file` carries these fields:
 | `batched_modified_at` | The `modified_at` that was last sent in a batch to Connectivo. Always `<= s3_source_modified_at`. |
 | `last_outcome` | Terminal Connectivo outcome: `completed`, `completed_with_warnings`, `failed`, `permanently_failed`, or `deleted`. `null` until first terminal event. |
 | `last_failure_reason`, `retry_count`, `max_retries` | Retry bookkeeping. `retry_count >= max_retries` is what gates retries. |
-| `next_retry_at` | Observability only — no longer drives scheduling. Retries fire on the next daily sweep. |
+| `next_retry_at` | Observability only — no longer drives scheduling. Retries fire during the next course discover pass (triggered by the 15-min tick). |
 | `writeback_state`, `last_writeback_modified_at` | Writeback bookkeeping. `last_writeback_modified_at` is consulted by `FileChangeDetector` to ignore our own writebacks. |
 
 ---
@@ -30,7 +30,7 @@ Every `source_file` carries these fields:
 | In-flight with Connectivo | `batched_modified_at = s3_source_modified_at AND last_outcome IS NULL` (or outcome is older than the current batched version) |
 | Terminal | `last_outcome IS NOT NULL AND batched_modified_at = s3_source_modified_at` |
 | Deleted from source | `last_outcome = 'deleted'` |
-| Retry-eligible | `last_outcome = 'failed' AND retry_count < max_retries` (swept daily) |
+| Retry-eligible | `last_outcome = 'failed' AND retry_count < max_retries` (retried during next course discover pass) |
 
 ---
 
@@ -43,19 +43,22 @@ Every `source_file` carries these fields:
                            │
                            ▼
                  ┌──────────────────┐
-                 │  Upload worker   │  streams Canvas → S3,
-                 │ (upload queue)   │  then conditionally UPDATEs
-                 └──────────┬───────┘   s3_source_modified_at only if the
-                            │           upload's modifiedAtMs is newer
+                 │  SFN: upload-    │  streams Canvas → S3,
+                 │  file (Map,     │  then conditionally UPDATEs
+                 │  parallel)      │  s3_source_modified_at only if the
+                 └──────────┬───────┘   upload's modifiedAtMs is newer
+                            │           Step Functions waits for ALL uploads
                             ▼
                  ┌──────────────────┐
-                 │   BatchBuilder   │  atomic claim:
-                 └──────────┬───────┘   UPDATE WHERE batched_modified_at IS NULL
-                            │           OR batched_modified_at < s3_source_modified_at
+                 │ SFN: batch-     │  atomic claim:
+                 │ publish         │  UPDATE WHERE batched_modified_at IS NULL
+                 └──────────┬───────┘   OR batched_modified_at < s3_source_modified_at
+                            │           writes request.json to S3
                             ▼
-                  Connectivo polls, acknowledges, POSTs results
+                  Connectivo polls requests bucket,
+                  writes response.json to responses bucket
                             │
-                            ▼
+                            ▼ (S3 event → SQS)
                  ┌──────────────────────┐
                  │ RemediationService   │  writes last_outcome;
                  └──────────────────────┘  missing files → failed

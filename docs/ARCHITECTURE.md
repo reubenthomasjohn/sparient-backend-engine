@@ -16,58 +16,59 @@ Target region: **us-east-2**. Single environment, Neon Postgres, no VPC.
                               └────────┬───────────┘
                                        │
                          POST /sync/institutions/:id
-                                       │ sends {type: "discover", institutionId, courseId?}
+                                       │ sends {type: "discover", institutionId}
                                        ▼
                               ┌───────────────────┐
              EventBridge ────▶│  discovery queue   │  SQS
-          (daily 02:00 UTC)   │      + DLQ         │
-          {type: "sweep"}     └────────┬───────────┘
+           (every 15 min)     │      + DLQ         │
+           {type: "tick"}     └────────┬───────────┘
                                        │
                                        ▼
                               ┌───────────────────┐
                               │ discovery Lambda   │
                               │  MaxConcurrency=5  │
                               │                    │
-                              │ sweep:             │
-                              │  • find due insts  │    1 discover msg per institution
-                              │  • retry failed    │
+                              │ tick:              │
+                              │  • check sync_time │
+                              │    per institution  │
+                              │  • enqueue due ones│
                               │                    │
                               │ discover:          │
                               │  • list Canvas     │
-                              │    courses + files  │
-                              │  • FileChange      │
-                              │    Detector         │
-                              │  • enqueue 1       │
-                              │    UploadJob per    │
-                              │    changed file     │
-                              │  • BatchBuilder     │    for files already in S3
-                              │    + RequestPublisher│   writes request.json
-                              └───┬────────────┬────┘
-                                  │            │
-                  1 msg per file  │            │  request.json written after
-                                  ▼            │  batch is created
-                         ┌──────────────┐      │
-                         │ upload queue  │      │
-                         │    (SQS)      │      │
-                         │   + DLQ       │      │
-                         └──────┬───────┘      │
-                                │              │
-                                ▼              │
-                       ┌──────────────────┐    │
-                       │  upload Lambda   │    │
-                       │ MaxConcurrency=10│    │
-                       │                  │    │
-                       │ • re-fetch Canvas│    │
-                       │   URL (fresh)    │    │
-                       │ • stream to S3   │    │
-                       │   source bucket  │    │
-                       │ • monotonic      │    │
-                       │   UPDATE guard   │    │
-                       │ • BatchBuilder   │    │    also writes request.json
-                       │   + RequestPub   │────┘    for newly uploaded files
-                       └──────────────────┘
-                                │
-                                ▼
+                              │    courses          │
+                              │  • start one SFN   │
+                              │    execution per    │
+                              │    course           │
+                              └────────┬───────────┘
+                                       │ StartExecution (one per course)
+                                       ▼
+                    ┌──────────────────────────────────────┐
+                    │   Step Functions: course-workflow     │
+                    │                                      │
+                    │  ┌──────────────┐                    │
+                    │  │ discover-    │  list files,       │
+                    │  │ files        │  FileChangeDetector│
+                    │  └──────┬───────┘                    │
+                    │         │ returns uploadJobs[]       │
+                    │         ▼                            │
+                    │  ┌──────────────┐                    │
+                    │  │  Map state   │  parallel,         │
+                    │  │  (max 10)    │  MaxConcurrency=10 │
+                    │  │              │                    │
+                    │  │ upload-file  │  re-fetch Canvas   │
+                    │  │ upload-file  │  URL, stream to S3,│
+                    │  │ upload-file  │  monotonic UPDATE  │
+                    │  └──────┬───────┘                    │
+                    │         │ waits for ALL to finish    │
+                    │         ▼                            │
+                    │  ┌──────────────┐                    │
+                    │  │ batch-       │  BatchBuilder +    │
+                    │  │ publish      │  RequestPublisher  │
+                    │  │              │  → one request.json│
+                    │  └──────────────┘    per course      │
+                    └──────────────────────────────────────┘
+                                       │
+                                       ▼
                        ┌──────────────────┐     ┌──────────────────────────────┐
                        │  S3 source bkt   │     │ S3: sparient-remediation-     │
                        │ (connectivo-     │     │     requests/                 │
@@ -120,21 +121,32 @@ Target region: **us-east-2**. Single environment, Neon Postgres, no VPC.
 | Lambda | Trigger | MaxConcurrency | Purpose |
 |---|---|---|---|
 | `sparient-dev-api` | API Gateway (HTTP API) | account default | Express app: sync triggers, batch queries, admin endpoints |
-| `sparient-dev-discovery` | discovery queue (SQS) | 5 | `sweep`: find due institutions + retries. `discover` (institution): list courses, fan out per course. `discover` (course): list files, detect changes, enqueue uploads, batch + publish |
-| `sparient-dev-upload` | upload queue (SQS) | 10 | Stream one Canvas file → S3 source bucket, then BatchBuilder + RequestPublisher |
-| `sparient-dev-responses` | responses queue (SQS) | 5 | Read response.json from S3, validate, write outcomes to DB |
+| `sparient-dev-discovery` | discovery queue (SQS) | 5 | `tick`: check which institutions are due (by `sync_time`). `discover`: list courses, start one SFN execution per course |
+| `sparient-dev-course-workflow` | Step Functions | 10 (via Map state) | All 3 SFN steps: discover-files, upload-file, batch-publish |
+| `sparient-dev-responses` | responses queue (SQS) | 5 | Read + validate response.json from S3, write outcomes to DB |
 
-All Lambdas: 1024 MB memory, 15-min timeout (workers), 30s timeout (API). No VPC attachment — Neon is publicly reachable.
+All Lambdas: 1024 MB memory, 15-min timeout (workers), 30s timeout (API). No VPC attachment.
 
-### SQS Queues (3 + 3 DLQs)
+### Step Functions (1 state machine)
+
+`sparient-dev-course-workflow` — per-course orchestration:
+
+| Step | Type | What it does |
+|---|---|---|
+| `DiscoverFiles` | Task | Lists files from Canvas, runs FileChangeDetector, returns upload list |
+| `UploadFiles` | Map (max 10) | Parallel upload — each invocation streams one file from Canvas → S3. Step Functions waits for ALL to finish. Built-in retry (2 attempts, 30s backoff). |
+| `BatchAndPublish` | Task | Creates one batch with all uploaded files, writes one request.json to S3. Also retries failed files + releases stuck batches for this course. |
+
+Step Functions guarantees one batch per course per sync pass — no split batches from parallel uploads.
+
+### SQS Queues (2 + 2 DLQs)
 
 | Queue | Producer | Consumer | Notes |
 |---|---|---|---|
-| `sparient-dev-discovery` | API Lambda (manual sync), EventBridge (daily sweep) | discovery Lambda | Two message shapes: `sweep` and `discover` |
-| `sparient-dev-upload` | discovery Lambda | upload Lambda | One message per changed file |
+| `sparient-dev-discovery` | API Lambda (manual sync), EventBridge (tick every 15 min) | discovery Lambda | `tick` and `discover` message types |
 | `sparient-dev-responses` | S3 event notification (response bucket) | responses Lambda | Triggered when Connectivo writes response.json |
 
-Visibility timeout: 15 min. Max receives: 3 before DLQ. Messages in DLQs are inspected manually.
+Visibility timeout: 15 min. Max receives: 3 before DLQ.
 
 ### S3 Buckets (4 total)
 
@@ -145,53 +157,53 @@ Visibility timeout: 15 min. Max receives: 3 before DLQ. Messages in DLQs are ins
 | `sparient-remediation-requests` | We write | Per-batch request.json that Connectivo polls |
 | `sparient-remediation-responses` | Connectivo writes | Per-batch response.json → triggers S3 event → SQS → responses Lambda |
 
-Source + remediated buckets existed before Terraform. Request + response buckets are Terraform-managed.
-
-### Discovery fan-out
-
-Discovery uses two levels of fan-out to avoid overloading a single Lambda:
-
-```
-EventBridge / API trigger
-        │
-        ▼
-{type: "discover", institutionId}          ── institution-level discover:
-        │                                      list courses from Canvas, upsert to DB,
-        │                                      fan out one message per active course
-        ▼
-{type: "discover", institutionId, "101"}   ── course-level discover (own Lambda):
-{type: "discover", institutionId, "102"}      list files, FileChangeDetector,
-{type: "discover", institutionId, "103"}      enqueue UploadJobs, BatchBuilder
-...                                           + RequestPublisher
-        │
-        ▼ (one msg per changed file)
-{sourceFileId, modifiedAtMs}               ── upload Lambda (own Lambda):
-                                              stream Canvas → S3, BatchBuilder
-```
-
-- Each course gets its **own Lambda invocation** → parallel processing up to MaxConcurrency=5.
-- A heavy course can't block others — it runs in isolation.
-- If one course fails, only that SQS message retries (3 attempts → DLQ). Other courses are unaffected.
-- `force` flag flows through the fan-out so each course-level discover respects it.
-- Manual single-course sync (`POST /sync/.../courses/:courseId`) skips the institution fan-out and goes straight to the course-level discover.
-- For a heavy course with thousands of files: the expensive part (downloading from Canvas) is already fanned out to the upload queue (one message per file, MaxConcurrency=10). Discovery itself just lists files from Canvas (~1s per 100 files, paginated) and runs FileChangeDetector (DB queries). Even 10,000 files finishes in under a minute.
-
 ### Scheduled trigger
 
 | Rule | Schedule | Target | Payload |
 |---|---|---|---|
-| `sparient-dev-nightly-sweep` | `cron(0 2 * * ? *)` UTC | discovery queue (SQS, direct) | `{ "type": "sweep" }` |
+| `sparient-dev-tick` | `rate(15 minutes)` | discovery queue (SQS) | `{ "type": "tick" }` |
 
-The sweep handler:
-1. Finds institutions where `sync_enabled = true` and `last_synced_at + sync_interval_hours < now()` → enqueues one `{type: 'discover'}` per due institution.
-2. Finds retry-eligible failed files (`last_outcome = 'failed', retry_count < max_retries`) → re-enqueues uploads or clears `batched_modified_at` for re-batching.
-3. Releases stuck unpublished batches (`status = 'pending', request_written_at IS NULL`) → clears claims, marks batch failed.
+The tick handler checks each institution's `sync_time` ("HH:MM" UTC) against the current time. An institution is due if:
+- `sync_enabled = true`
+- Current time is within the 15-min window of `sync_time`
+- `last_synced_at` is null or before today
+
+Scheduling is fully DB-driven — change an institution's `sync_time` in the database, no infra changes needed.
+
+### Discovery fan-out
+
+Two levels of fan-out to avoid overloading a single Lambda:
+
+```
+EventBridge tick (every 15 min)
+        │
+        ▼
+{type: "tick"}                    ── tick handler:
+        │                            check sync_time per institution
+        │                            enqueue {discover} for due ones
+        ▼
+{type: "discover", institutionId} ── institution discover:
+        │                            list courses from Canvas, upsert to DB,
+        │                            start one SFN execution per active course
+        ▼
+Step Functions (one per course)   ── course workflow:
+        │                            discover-files → Map(upload, max 10) → batch-publish
+        │                            Step Functions guarantees "wait for all" —
+        │                            one batch per course, no split batches
+        ▼
+request.json written to S3       ── Connectivo polls and processes
+```
+
+- Each course gets its own SFN execution → parallel processing, isolation.
+- A heavy course can't block others.
+- If one upload fails, SFN retries it (2 attempts, 30s backoff). If all retries fail, the batch step still runs with whatever succeeded.
+- Manual single-course sync (`POST /sync/.../courses/:courseId`) starts an SFN execution directly (skips the institution fan-out).
 
 ### Database
 
-**Neon Postgres** (free tier). Publicly reachable, TLS enforced. No VPC, no NAT, no RDS Proxy needed. Terraform creates the Neon project via the `kislerdm/neon` provider; connection URI is passed to Lambdas as the `DATABASE_URL` env var.
+**Neon Postgres** (free tier). Publicly reachable, TLS enforced. Terraform creates the Neon project via the `kislerdm/neon` provider; connection URI is passed to Lambdas as `DATABASE_URL`.
 
-For prod: switch to RDS + RDS Proxy in a VPC. Terraform modules (`modules/networking`, `modules/database`) are already written. See `docs/TODO.md`.
+For prod: switch to RDS + RDS Proxy in a VPC (modules already written). See `docs/TODO.md`.
 
 ### CI/CD
 
@@ -216,6 +228,7 @@ GitHub repo settings:
 | Item | Cost |
 |---|---|
 | Neon Postgres (free tier) | $0 |
+| Step Functions (~$0.025/1000 executions) | ~$0 |
 | SQS / Lambda / API GW / EventBridge | free tier |
 | ECR storage (4 repos) | ~$0.10 |
 | CloudWatch Logs | ~$1 |
@@ -228,8 +241,8 @@ GitHub repo settings:
 1. `cd terraform/bootstrap && terraform apply` → state bucket + OIDC provider.
 2. Fill in `envs/dev/backend.tf` with the state bucket name.
 3. `cd terraform/envs/dev && terraform apply -target=module.ecr` → creates ECR repos.
-4. Push bootstrap placeholder images to all 4 repos (see `terraform/README.md`).
-5. `terraform apply` → the rest.
+4. Push bootstrap placeholder images to all 4 repos.
+5. `terraform apply` → the rest (Neon, SQS, Lambdas, SFN, API GW, EventBridge).
 6. Set GitHub Actions variables/secrets.
 7. `npm run db:migrate && npm run db:seed` against the Neon connection URI.
 8. Push to `main` → CI deploys real images.
