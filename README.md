@@ -1,48 +1,55 @@
 # Sparient Backend Engine
 
-Backend engine for pulling course files from institutional sources (Canvas, SharePoint), sending them for accessibility remediation via Connectivo, and managing the full file lifecycle.
+Backend engine for pulling course files from institutional sources (Canvas, SharePoint), sending them for accessibility remediation via Connectivo, and managing the full file lifecycle. Connectivo integration is via S3 (request/response JSON files), not REST APIs.
 
 ## Architecture Overview
 
 ```
-Nightly Cron / Manual Trigger
+Manual Trigger / EventBridge (daily sweep)
         │
         ▼
   SyncOrchestrator ──► discovery queue
                           │
                           ▼
-                   Discovery worker
-                   ├── Lists Canvas courses + files
+                   Discovery Lambda (institution-level)
+                   ├── Lists Canvas courses, upserts to DB
+                   └── Fans out one message per active course
+                          │
+                          ▼
+                   Discovery Lambda (course-level, parallel)
+                   ├── Lists Canvas files for one course
                    ├── FileChangeDetector bumps discovered_modified_at
-                   └── Enqueues one UploadJob per new/changed file
+                   ├── Enqueues one UploadJob per new/changed file
+                   └── BatchBuilder + RequestPublisher for files already in S3
                           │
                           ▼
                       upload queue
                           │
                           ▼
-                    Upload worker
+                    Upload Lambda
                     ├── Re-fetches Canvas file (fresh pre-signed URL)
                     ├── Streams to S3 (content-addressed key: v-:modifiedAtMs)
                     ├── Conditionally UPDATEs s3_source_modified_at (monotonic)
-                    └── Calls BatchBuilder, which atomically claims files
+                    └── BatchBuilder + RequestPublisher writes request.json to S3
                           │
                           ▼
-  Connectivo polls  GET  /api/v1/connectivo/batches
-                    POST /api/v1/connectivo/batches/:id/acknowledge   (idempotent)
-                    POST /api/v1/connectivo/batches/:id/results       (idempotent)
+           Connectivo polls sparient-remediation-requests bucket,
+           processes files, writes remediated PDFs to remediated bucket,
+           writes response.json to sparient-remediation-responses bucket
                           │
-                          ▼
-                  RemediationService writes last_outcome;
-                  missing files are marked failed → retry job picks them up.
+                          ▼ (S3 event → SQS)
+                   Responses Lambda
+                   ├── Validates response.json (Zod schema)
+                   └── RemediationService writes outcomes to DB, batch → terminal
 ```
 
-Queues are abstracted behind `IQueue`. In dev (no `SQS_*_URL` set) both queues run in-process with a `setInterval` poller. In prod the same handlers run as Lambdas triggered by SQS.
+See `docs/ARCHITECTURE.md` for the full deployment diagram, fan-out details, and cost breakdown.
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) v20+
-- [Docker](https://www.docker.com/) (for local PostgreSQL)
-- AWS account with two S3 buckets (source + remediated)
+- [Docker](https://www.docker.com/) (for local PostgreSQL, or use Neon)
+- AWS account with S3 buckets (source, remediated, requests, responses)
 - Canvas API token, domain, and account ID
 
 ---
@@ -66,32 +73,25 @@ cp .env.example .env
 Open `.env` and fill in your values:
 
 ```bash
-# Database — leave as-is for local Docker setup
+# Database — local Docker or Neon connection string
 DATABASE_URL=postgresql://sparient:sparient@localhost:5432/sparient
 
-# AWS
+# AWS (optional locally — SDK uses default credential chain)
 AWS_ACCESS_KEY_ID=your-access-key
 AWS_SECRET_ACCESS_KEY=your-secret-key
-AWS_REGION=us-east-1
-S3_SOURCE_BUCKET=your-source-bucket-name
-S3_REMEDIATED_BUCKET=your-remediated-bucket-name
+AWS_REGION=us-east-2
+S3_SOURCE_BUCKET=your-source-bucket
+S3_REMEDIATED_BUCKET=your-remediated-bucket
+S3_REQUESTS_BUCKET=sparient-remediation-requests
+S3_RESPONSES_BUCKET=sparient-remediation-responses
 
 # Canvas
 CANVAS_DOMAIN=your-institution.instructure.com   # no https://
 CANVAS_ACCOUNT_ID=1                               # found in Canvas Admin URL
 CANVAS_API_TOKEN=your-canvas-api-token
 
-# Connectivo — generate with: openssl rand -hex 32
-CONNECTIVO_API_KEY_SECRET=your-secret-here
-
 # Optional
 INSTITUTION_NAME="University of XYZ"
-
-# Queues — leave unset in dev to use the in-memory queue. In prod, set both URLs
-# and set QUEUE_START_CONSUMERS=false on the API service (Lambdas consume instead).
-# SQS_DISCOVERY_URL=https://sqs.us-east-1.amazonaws.com/…/sparient-discovery
-# SQS_UPLOAD_URL=https://sqs.us-east-1.amazonaws.com/…/sparient-upload
-# QUEUE_START_CONSUMERS=true
 ```
 
 **Getting your Canvas credentials:**
@@ -101,15 +101,13 @@ INSTITUTION_NAME="University of XYZ"
 
 ### 3. Start the database
 
+For local Postgres:
 ```bash
 docker compose up -d
-```
-
-Postgres will be available at `localhost:5432`. Wait for the healthcheck to pass before continuing:
-
-```bash
 docker compose ps   # State should show "healthy"
 ```
+
+Or set `DATABASE_URL` to a Neon connection string (the dev deployment uses Neon).
 
 ### 4. Run migrations
 
@@ -117,17 +115,15 @@ docker compose ps   # State should show "healthy"
 npm run db:migrate
 ```
 
-When prompted for a migration name, enter `init`.
-
 ### 5. Seed the database
 
-Creates the first institution record from your `.env` Canvas credentials and generates a Connectivo API key.
+Creates the first institution record from your `.env` Canvas credentials.
 
 ```bash
 npm run db:seed
 ```
 
-The output will print your `institutionId` and `connectivoApiKey` — copy these into your Postman collection variables.
+The output will print your `institutionId` — copy it into your Postman collection variables.
 
 ### 6. Start the server
 
@@ -139,9 +135,9 @@ Server starts on `http://localhost:3000`. You should see:
 
 ```
 Database connected
+InMemoryQueue(discovery): consumer started
+InMemoryQueue(upload): consumer started
 Server listening on port 3000
-Nightly sync job scheduled { schedule: '0 2 * * *' }
-Retry job scheduled { schedule: '0 */2 * * *' }
 ```
 
 ---
@@ -153,7 +149,6 @@ Import `sparient.postman_collection.json` into Postman and set the collection va
 | Variable | Where to get it |
 |---|---|
 | `institutionId` | Output of `npm run db:seed` |
-| `connectivoApiKey` | Output of `npm run db:seed` |
 | `canvasDomain` | Your Canvas domain |
 | `canvasApiToken` | Your Canvas API token |
 | `canvasAccountId` | Your Canvas account ID |
@@ -174,42 +169,38 @@ Set `courseId` to a Canvas course ID from step 1. Confirms files exist and MIME 
 
 **3. Trigger a sync**
 ```
-Sync (Internal) → Trigger full institution sync
+Sync (Internal) → Trigger single course sync
 ```
-This runs in the background. Watch the server logs to track progress.
+Watch the server logs. You should see: discovery → upload to S3 → batch created → request.json written.
 
 **4. Check batch was created**
 ```
 Batches (Internal) → List batches for institution
 ```
-You should see a batch per course with `status: pending`.
+You should see a batch with `status: pending` and `requestWrittenAt` set.
 
-**5. Simulate Connectivo polling**
+**5. Verify request.json landed in S3**
+```bash
+aws s3 ls s3://sparient-remediation-requests/<institutionId>/
 ```
-Connectivo (Authenticated) → List pending batches
-```
-From the response, set the following collection variables from one of the files:
-- `batchId` — top-level `batch_id`
-- `sourceFileId` — `files[i].file_id` (this is the source_file UUID, *not* the Canvas file id)
-- `canvasFileId` — `files[i].canvas_file_id`
-- `sourceModifiedAtMs` — parse the `v-<ms>` segment out of `files[i].s3_key` and paste the ms value. Used only to build the sample `remediated_path` in step 7.
 
-**6. Simulate Connectivo acknowledging**
+**6. Simulate Connectivo's response**
+Upload a fake response.json to the responses bucket:
+```bash
+aws s3 cp response.json s3://sparient-remediation-responses/<institutionId>/<courseId>/<batchId>.json
 ```
-Connectivo (Authenticated) → Acknowledge batch
-```
-Idempotent: re-POSTing the same `connectivo_batch_id` returns 200. A different id on a processing batch returns 409.
 
-**7. Simulate Connectivo submitting results**
+**7. Process the response (local dev)**
 ```
-Connectivo (Authenticated) → Submit batch results
+Admin → Process response manually
 ```
-`file_id` must be the source_file UUID (`sourceFileId`), not `canvasFileId`. Files missing from the payload are automatically marked failed. Replaying the same `connectivo_batch_id` on a terminal batch is a no-op.
+Set `institutionId`, `courseId`, and `batchId` in Postman variables first.
 
 **8. Verify final state**
 ```
-Batches (Internal) → Get files in a batch
+Batches (Internal) → Get batch by ID
 ```
+Should show terminal status (`completed`, `completed_with_warnings`, or `failed`).
 
 ---
 
@@ -221,38 +212,33 @@ Batches (Internal) → Get files in a batch
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm start` | Run compiled production build |
 | `npm run db:migrate` | Run pending database migrations |
-| `npm run db:seed` | Seed institution + Connectivo API key |
+| `npm run db:seed` | Seed institution record |
 | `npm run db:studio` | Open Prisma Studio (DB browser) at `localhost:5555` |
 | `npm run db:reset` | Drop and recreate the database (destructive) |
+
 Scheduling is driven by two columns on `institutions`:
 
 | Column | Default | Purpose |
 |---|---|---|
-| `sync_enabled` | `true` | Set to `false` to opt an institution out of the nightly sweep entirely |
+| `sync_enabled` | `true` | Set to `false` to opt an institution out of the nightly sweep |
 | `sync_interval_hours` | `24` | How often the sweep re-queues a discovery for this institution |
 
 ---
 
 ## API Reference
 
-### Connectivo endpoints (requires `X-API-Key` header)
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/v1/connectivo/batches` | List all pending batches with file details |
-| `POST` | `/api/v1/connectivo/batches/:id/acknowledge` | Acknowledge a batch, begin processing |
-| `POST` | `/api/v1/connectivo/batches/:id/results` | Submit remediation results |
-
 ### Internal endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/sync/institutions/:id` | Enqueue a full institution discovery job (`?force=true` rewinds `discovered_modified_at`) |
-| `POST` | `/api/v1/sync/institutions/:id/courses/:courseId` | Enqueue a single-course discovery job |
+| `POST` | `/api/v1/sync/institutions/:id` | Enqueue institution discovery (fans out per course). `?force=true` rewinds `discovered_modified_at` |
+| `POST` | `/api/v1/sync/institutions/:id/courses/:courseId` | Enqueue single-course discovery |
 | `DELETE` | `/api/v1/institutions/:id/data` | Wipe all courses/files/batches for the institution |
 | `GET` | `/api/v1/batches/:id` | Get batch detail |
 | `GET` | `/api/v1/batches/:id/files` | Get files + pinned `s3SourceKey` / `sourceModifiedAt` for a batch |
 | `GET` | `/api/v1/batches/institutions/:id` | List batches for an institution |
+| `GET` | `/api/v1/batches/stuck` | List pending batches with no response after N hours |
+| `POST` | `/api/v1/admin/responses/:instId/:courseId/:batchId` | Manually trigger response processing (reads response.json from S3) |
 | `GET` | `/health` | Health check |
 
 ---
@@ -263,12 +249,12 @@ Scheduling is driven by two columns on `institutions`:
 src/
 ├── api/
 │   ├── middleware/
-│   │   ├── apiKeyAuth.middleware.ts   # SHA-256 key validation
 │   │   └── errorHandler.middleware.ts
 │   └── routes/
-│       ├── connectivo.routes.ts
 │       ├── sync.routes.ts
-│       └── batches.routes.ts
+│       ├── batches.routes.ts
+│       ├── admin.routes.ts            # Manual response processing
+│       └── institutions.routes.ts
 ├── config/index.ts                    # Zod-validated env config
 ├── db/client.ts                       # Prisma singleton (pg adapter)
 ├── queue/
@@ -277,12 +263,19 @@ src/
 │   ├── SqsQueue.ts                    # Prod: SQS long-poll
 │   └── index.ts                       # Factory + DiscoveryJob / UploadJob types
 ├── workers/
+│   ├── api/
+│   │   └── lambda.ts                  # Express app for API Gateway
 │   ├── discovery/
-│   │   ├── handler.ts                 # Discovery entry (queue + Lambda share this)
-│   │   └── lambda.ts                  # SQSEvent → handler, ReportBatchItemFailures
-│   └── upload/
-│       ├── handler.ts                 # Upload entry (monotonic UPDATE + BatchBuilder)
-│       └── lambda.ts                  # SQSEvent → handler
+│   │   ├── handler.ts                 # Sweep + institution fan-out + course discover
+│   │   └── lambda.ts                  # SQSEvent → handler
+│   ├── upload/
+│   │   ├── handler.ts                 # Stream Canvas → S3, BatchBuilder
+│   │   └── lambda.ts                  # SQSEvent → handler
+│   ├── responses/
+│   │   ├── handler.ts                 # Read + validate response.json, RemediationService
+│   │   └── lambda.ts                  # SQSEvent (S3 event) → handler
+│   └── monolith/
+│       └── lambda.ts                  # Single-Lambda entry (drains queues inline)
 ├── services/
 │   ├── sources/
 │   │   ├── ISourceClient.ts           # Interface for all source systems
@@ -290,22 +283,24 @@ src/
 │   │   └── canvas/
 │   │       ├── CanvasClient.ts        # Paginated Canvas HTTP client
 │   │       └── CanvasFileFetcher.ts   # Implements ISourceClient
-│   ├── storage/S3Service.ts
+│   ├── storage/S3Service.ts           # S3 upload, putJson, getJson
 │   ├── sync/
 │   │   ├── FileChangeDetector.ts      # Bumps discovered_modified_at, clears outcomes
-│   │   ├── BatchBuilder.ts            # Atomic claim via batched_modified_at
-│   │   └── SyncOrchestrator.ts        # Thin wrapper — enqueues a DiscoveryJob
-│   └── remediation/RemediationService.ts
+│   │   ├── BatchBuilder.ts            # Atomic claim + RequestPublisher
+│   │   └── SyncOrchestrator.ts        # Enqueues a DiscoveryJob
+│   └── remediation/
+│       ├── RemediationService.ts      # Writes outcomes from response.json
+│       └── RequestPublisher.ts        # Writes request.json to S3
 ├── types/
 │   ├── canvas.ts
-│   ├── connectivo.ts
+│   ├── connectivo.ts                  # Zod schemas + TS types for request/response JSON
 │   └── source.ts
 ├── utils/
 │   ├── logger.ts                      # Winston (JSON in prod, readable in dev)
 │   ├── errors.ts
 │   └── failure.ts                     # Retry-count + exponential backoff helper
 ├── app.ts
-└── server.ts
+└── server.ts                          # Local dev entry (in-memory queues)
 prisma/
 ├── schema.prisma
 ├── seed.ts
@@ -318,12 +313,12 @@ docker-compose.yml
 
 ## Deployment
 
-AWS deployment is defined under `terraform/` (VPC + RDS + RDS Proxy + SQS + 3 Lambdas + API Gateway + EventBridge sweep). See:
+AWS deployment uses Neon (Postgres), SQS, 4 Lambdas, API Gateway, and EventBridge. No VPC or NAT. ~$1/mo for dev.
 
-- `docs/ARCHITECTURE.md` — diagrams, component choices, cost breakdown.
-- `terraform/README.md` — bring-up walkthrough and per-module layout.
+- `docs/ARCHITECTURE.md` — full diagram, component details, fan-out design, cost breakdown.
+- `terraform/README.md` — bring-up walkthrough.
 
-Images are built and pushed by GitHub Actions CI (`.github/workflows/deploy-*.yml`). See `terraform/README.md` for the bring-up flow.
+CI/CD: push to `main` → GitHub Actions runs Terraform apply → Prisma migrate → builds 4 Docker images → updates 4 Lambdas.
 
 ## Adding a New Source (e.g. SharePoint)
 
