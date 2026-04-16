@@ -307,17 +307,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
           "isInitialSync.$"   = "$.Payload.isInitialSync"
           "uploadJobs.$"      = "$.Payload.uploadJobs"
         }
-        Next = "CheckUploads"
-      }
-
-      CheckUploads = {
-        Type = "Choice"
-        Choices = [{
-          Variable        = "$.discovery.uploadJobs[0]"
-          IsPresent       = true
-          Next            = "UploadFiles"
-        }]
-        Default = "BatchAndPublish"
+        Next = "UploadFiles"
       }
 
       UploadFiles = {
