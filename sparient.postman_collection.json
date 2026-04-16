@@ -4,14 +4,14 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl",          "value": "http://localhost:3000" },
-    { "key": "connectivoApiKey", "value": "your-connectivo-api-key-here" },
-    { "key": "canvasDomain",     "value": "your-institution.instructure.com" },
-    { "key": "canvasApiToken",   "value": "your-canvas-api-token" },
-    { "key": "canvasAccountId",  "value": "1" },
-    { "key": "institutionId",    "value": "" },
-    { "key": "courseId",         "value": "" },
-    { "key": "batchId",          "value": "" }
+    { "key": "baseUrl",            "value": "http://localhost:3000" },
+    { "key": "canvasDomain",       "value": "your-institution.instructure.com" },
+    { "key": "canvasApiToken",     "value": "your-canvas-api-token" },
+    { "key": "canvasAccountId",    "value": "1" },
+    { "key": "institutionId",      "value": "" },
+    { "key": "courseId",           "value": "" },
+    { "key": "batchId",            "value": "" },
+    { "key": "canvasFileId",       "value": "" }
   ],
   "item": [
     {
@@ -94,10 +94,9 @@
               { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
             ],
             "url": {
-              "raw": "https://{{canvasDomain}}/api/v1/courses/{{courseId}}/files/:fileId",
+              "raw": "https://{{canvasDomain}}/api/v1/files/{{canvasFileId}}",
               "host": ["https://{{canvasDomain}}"],
-              "path": ["api", "v1", "courses", "{{courseId}}", "files", ":fileId"],
-              "variable": [{ "key": "fileId", "value": "" }]
+              "path": ["api", "v1", "files", "{{canvasFileId}}"]
             }
           }
         }
@@ -119,7 +118,7 @@
     },
     {
       "name": "Sync (Internal)",
-      "description": "Trigger syncs manually — no auth required (internal network only in prod).",
+      "description": "Enqueues a discovery job. Returns 200 once the job is on the queue (does not wait for the sync to finish). Watch server logs to track progress.",
       "item": [
         {
           "name": "Trigger full institution sync",
@@ -132,7 +131,7 @@
           "name": "Force full institution re-sync",
           "request": {
             "method": "POST",
-            "description": "Clears lastSyncedAt on all courses and resets canvasModifiedAt to epoch, forcing every file to be treated as changed regardless of its current status.",
+            "description": "Clears lastSyncedAt on all courses and resets discovered_modified_at to epoch, so every file is treated as changed on the next discovery pass regardless of its current state.",
             "url": {
               "raw": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}?force=true",
               "host": ["{{baseUrl}}"],
@@ -155,7 +154,7 @@
           "name": "Force single course re-sync",
           "request": {
             "method": "POST",
-            "description": "Resets lastSyncedAt and canvasModifiedAt for this course only, forcing all its files to be re-queued.",
+            "description": "Resets lastSyncedAt and discovered_modified_at for this course only, forcing all its files to be re-queued.",
             "url": {
               "raw": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}/courses/{{courseId}}?force=true",
               "host": ["{{baseUrl}}"],
@@ -181,6 +180,7 @@
         {
           "name": "Get files in a batch",
           "request": {
+            "description": "Returns batch_files with the pinned s3SourceKey and sourceModifiedAt for each file.",
             "method": "GET",
             "url": "{{baseUrl}}/api/v1/batches/{{batchId}}/files"
           }
@@ -199,52 +199,34 @@
               ]
             }
           }
+        },
+        {
+          "name": "Stuck batches",
+          "request": {
+            "description": "Returns pending batches whose request.json was written to S3 more than N hours ago without a response. Pure observability — no remediation triggered.",
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/batches/stuck?olderThanHours=24",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "batches", "stuck"],
+              "query": [
+                { "key": "olderThanHours", "value": "24" }
+              ]
+            }
+          }
         }
       ]
     },
     {
-      "name": "Connectivo (Authenticated)",
-      "description": "Simulates what Connectivo calls. Requires X-API-Key header.",
+      "name": "Admin",
+      "description": "Internal admin operations for testing and the monolith / single-Lambda env.",
       "item": [
         {
-          "name": "List pending batches",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "X-API-Key", "value": "{{connectivoApiKey}}" }
-            ],
-            "url": "{{baseUrl}}/api/v1/connectivo/batches"
-          }
-        },
-        {
-          "name": "Acknowledge batch",
+          "name": "Process response manually",
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "X-API-Key",    "value": "{{connectivoApiKey}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"connectivo_batch_id\": \"conn-batch-uuid-test-123\"\n}"
-            },
-            "url": "{{baseUrl}}/api/v1/connectivo/batches/{{batchId}}/acknowledge"
-          }
-        },
-        {
-          "name": "Submit batch results",
-          "request": {
-            "method": "POST",
-            "description": "file_id must be the internal source_file UUID (returned by GET /batches/:id/files as sourceFileId). S3 paths use the institution UUID, not a slug.",
-            "header": [
-              { "key": "X-API-Key",    "value": "{{connectivoApiKey}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"batch\": {\n    \"id\": \"conn-batch-uuid-test-123\",\n    \"external_batch_id\": \"{{batchId}}\",\n    \"state\": \"Completed\",\n    \"started_at\": \"2026-04-13T02:01:00.000Z\",\n    \"completed_at\": \"2026-04-13T02:14:37.000Z\",\n    \"summary\": {\n      \"total_files\": 1,\n      \"total_pages\": 24,\n      \"succeeded\": 1,\n      \"failed\": 0,\n      \"requires_review\": 0,\n      \"total_issues_found\": 6,\n      \"total_issues_fixed\": 6\n    }\n  },\n  \"folders\": [\n    {\n      \"path\": \"{{institutionId}}/courses/112233/files\",\n      \"files\": [\n        {\n          \"file_id\": \"REPLACE_WITH_SOURCE_FILE_UUID\",\n          \"file_name\": \"lecture-1.pdf\",\n          \"state\": \"Completed\",\n          \"quality_label\": \"AA\",\n          \"remediated_path\": \"{{institutionId}}/courses/112233/files/canvas-file-id/lecture-1.pdf\",\n          \"total_pages\": 24,\n          \"processing_time_seconds\": 38,\n          \"verapdf_errors\": 0,\n          \"verapdf_warnings\": 2,\n          \"issues_by_category\": {\n            \"headings\": { \"found\": 3, \"fixed\": 3, \"remaining\": 0 },\n            \"alt_text\":  { \"found\": 2, \"fixed\": 2, \"remaining\": 0 },\n            \"contrast\":  { \"found\": 1, \"fixed\": 1, \"remaining\": 0 }\n          },\n          \"error\": null\n        }\n      ]\n    }\n  ]\n}"
-            },
-            "url": "{{baseUrl}}/api/v1/connectivo/batches/{{batchId}}/results"
+            "description": "Reads response.json from the responses S3 bucket at the conventional path and processes it as if the responses Lambda had received it via S3 event. Use for testing or in the single-Lambda env where there is no S3 → SQS → Lambda chain.",
+            "url": "{{baseUrl}}/api/v1/admin/responses/{{institutionId}}/{{courseId}}/{{batchId}}"
           }
         }
       ]

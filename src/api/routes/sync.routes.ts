@@ -7,8 +7,8 @@ const router = Router();
 const syncOrchestrator = new SyncOrchestrator();
 
 // POST /sync/institutions/:institutionId?force=true
-// Triggers a full sync for all courses in an institution.
-// ?force=true clears lastSyncedAt on all courses, forcing a full re-sync.
+// ?force=true clears lastSyncedAt and rewinds discovered_modified_at so the next
+// discovery treats every file as changed.
 router.post(
   '/institutions/:institutionId',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -21,20 +21,15 @@ router.post(
           where: { institutionId },
           data: { lastSyncedAt: null },
         });
-        // Reset canvasModifiedAt to epoch so FileChangeDetector treats every file
-        // as changed and re-queues it, regardless of current status.
         await prisma.sourceFile.updateMany({
           where: { course: { institutionId } },
-          data: { canvasModifiedAt: new Date(0) },
+          data: { discoveredModifiedAt: new Date(0) },
         });
         logger.info('Sync: forced full re-sync', { institutionId });
       }
 
-      res.json({ success: true, message: force ? 'Full re-sync started' : 'Sync started', institutionId });
-
-      syncOrchestrator.syncInstitution(institutionId).catch((err) =>
-        logger.error('Sync failed', { institutionId, error: err }),
-      );
+      await syncOrchestrator.syncInstitution(institutionId);
+      res.json({ success: true, message: force ? 'Full re-sync enqueued' : 'Sync enqueued', institutionId });
     } catch (err) {
       next(err);
     }
@@ -42,8 +37,6 @@ router.post(
 );
 
 // POST /sync/institutions/:institutionId/courses/:courseId?force=true
-// Triggers a sync for a single course.
-// ?force=true clears lastSyncedAt on that course, forcing a full re-sync.
 router.post(
   '/institutions/:institutionId/courses/:courseId',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -64,16 +57,18 @@ router.post(
         });
         await prisma.sourceFile.updateMany({
           where: { courseId: { in: courseIds } },
-          data: { canvasModifiedAt: new Date(0) },
+          data: { discoveredModifiedAt: new Date(0) },
         });
         logger.info('Sync: forced full re-sync', { institutionId, courseId });
       }
 
-      res.json({ success: true, message: force ? 'Full re-sync started' : 'Course sync started', institutionId, courseId });
-
-      syncOrchestrator.syncInstitution(institutionId, courseId).catch((err) =>
-        logger.error('Course sync failed', { institutionId, courseId, error: err }),
-      );
+      await syncOrchestrator.syncInstitution(institutionId, courseId);
+      res.json({
+        success: true,
+        message: force ? 'Full re-sync enqueued' : 'Course sync enqueued',
+        institutionId,
+        courseId,
+      });
     } catch (err) {
       next(err);
     }

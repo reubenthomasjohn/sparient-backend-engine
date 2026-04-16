@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { Readable } from 'stream';
 import { Institution } from '@prisma/client';
 import { CanvasClient } from './CanvasClient';
 import { ISourceClient } from '../ISourceClient';
@@ -26,21 +27,29 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.xls', '.xlsx',
 ]);
 
-// A term is active if now falls within its date range.
-// null start_at = no lower bound (treat as already started).
-// null end_at   = no upper bound (treat as never-ending, e.g. the Default Term).
 function isActiveTerm(term: CanvasTerm, now: Date): boolean {
   if (term.start_at !== null && new Date(term.start_at) > now) return false;
   if (term.end_at !== null && new Date(term.end_at) < now) return false;
   return true;
 }
 
-// Extension check is the canonical filter — Canvas doesn't always assign correct MIME types
-// (e.g. application/octet-stream for .docx), so we can't rely on content-type alone.
-// The SUPPORTED_MIME_TYPES array above is passed as a server-side hint only.
-function isSupportedFile(file: CanvasFile): boolean {
-  const ext = '.' + file.filename.split('.').pop()?.toLowerCase();
+function isSupportedFile(file: Pick<CanvasFile, 'filename'>): boolean {
+  const parts = file.filename.split('.');
+  if (parts.length < 2) return false;
+  const ext = '.' + parts.pop()!.toLowerCase();
   return SUPPORTED_EXTENSIONS.has(ext);
+}
+
+function toDiscovered(f: CanvasFile): DiscoveredFile {
+  return {
+    externalId: f.id.toString(),
+    displayName: f.display_name,
+    fileName: f.filename,
+    mimeType: f['content-type'],
+    sizeBytes: f.size ?? null,
+    modifiedAt: new Date(f.modified_at),
+    downloadUrl: f.url,
+  };
 }
 
 export class CanvasFileFetcher implements ISourceClient {
@@ -88,48 +97,43 @@ export class CanvasFileFetcher implements ISourceClient {
   async getFiles(courseExternalId: string, lastSyncedAt: Date | null): Promise<DiscoveredFile[]> {
     logger.info('Canvas: fetching files', { courseId: courseExternalId, lastSyncedAt });
 
-    // Sort by updated_at descending so we can stop early on incremental syncs.
-    // content_types[] is serialised as repeated keys by our custom paramsSerializer:
-    // content_types[]=application/pdf&content_types[]=application/msword&...
     const allFiles = await this.client.getPaginated<CanvasFile>(
       `/courses/${courseExternalId}/files`,
       { sort: 'updated_at', order: 'desc', 'content_types[]': SUPPORTED_MIME_TYPES },
     );
 
-    logger.info('Canvas: raw files fetched', { courseId: courseExternalId, count: allFiles.length });
-
-    // On incremental syncs: discard files whose updated_at predates the last sync.
-    // We still run modified_at comparison in FileChangeDetector for accuracy —
-    // this is purely an optimisation to trim the list early.
     const afterDateFilter = lastSyncedAt
       ? allFiles.filter((f) => new Date(f.updated_at) >= lastSyncedAt)
       : allFiles;
 
-    // Extension check catches files Canvas served with a wrong MIME type
-    // (e.g. application/octet-stream) that slipped past the server-side filter.
     const files = afterDateFilter.filter(isSupportedFile);
 
-    logger.info('Canvas: files after incremental + extension filter', {
+    logger.info('Canvas: files after filter', {
       courseId: courseExternalId,
-      count: files.length,
+      raw: allFiles.length,
+      kept: files.length,
     });
 
-    return files.map((f) => ({
-      externalId: f.id.toString(),
-      displayName: f.display_name,
-      fileName: f.filename,
-      mimeType: f['content-type'],
-      sizeBytes: f.size ?? null,
-      modifiedAt: new Date(f.modified_at),
-      downloadUrl: f.url,
-    }));
+    return files.map(toDiscovered);
   }
 
-  async downloadFile(downloadUrl: string): Promise<Buffer> {
-    const response = await axios.get<ArrayBuffer>(downloadUrl, {
-      responseType: 'arraybuffer',
+  async getFile(_courseExternalId: string, fileExternalId: string): Promise<DiscoveredFile | null> {
+    try {
+      const file = await this.client.getFile(fileExternalId);
+      if (!isSupportedFile(file)) return null;
+      return toDiscovered(file);
+    } catch (err) {
+      // 404 = file deleted; null signals the caller to mark it deleted_from_source
+      if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async downloadFileStream(downloadUrl: string): Promise<Readable> {
+    const response = await axios.get<Readable>(downloadUrl, {
+      responseType: 'stream',
       timeout: 120_000,
     });
-    return Buffer.from(response.data);
+    return response.data;
   }
 }

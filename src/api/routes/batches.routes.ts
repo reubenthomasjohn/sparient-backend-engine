@@ -5,6 +5,32 @@ import { Errors } from '../../utils/errors';
 
 const router = Router();
 
+// GET /batches/stuck?olderThanHours=24
+// Returns pending batches whose request was written more than N hours ago — i.e.,
+// Connectivo hasn't produced a response in time. Pure observability; no remediation.
+router.get('/stuck', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const hours = Number(req.query.olderThanHours ?? 24);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      throw Errors.badRequest('olderThanHours must be a positive number');
+    }
+    const cutoff = new Date(Date.now() - hours * 3_600_000);
+
+    const stuck = await prisma.batch.findMany({
+      where: {
+        status: 'pending',
+        requestWrittenAt: { not: null, lt: cutoff },
+      },
+      include: { institution: { select: { id: true, name: true, slug: true } }, course: true },
+      orderBy: { requestWrittenAt: 'asc' },
+    });
+
+    res.json({ success: true, count: stuck.length, data: stuck });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /batches/:batchId
 router.get('/:batchId', async (req: Request, res: Response, next: NextFunction) => {
   try {

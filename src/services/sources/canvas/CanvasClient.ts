@@ -63,6 +63,15 @@ export class CanvasClient {
     return results;
   }
 
+  // Fetch a single file's current metadata. Used by the upload worker to refresh the
+  // pre-signed download URL (Canvas URLs expire quickly) right before streaming the bytes.
+  async getFile(fileExternalId: string): Promise<import('../../../types/canvas').CanvasFile> {
+    const response = await this.http.get<import('../../../types/canvas').CanvasFile>(
+      `/files/${fileExternalId}`,
+    );
+    return response.data;
+  }
+
   // Fetches all enrollment terms for the account.
   // The Canvas terms endpoint wraps its response in { enrollment_terms: [...] }
   // rather than returning a bare array, so it can't use getPaginated.

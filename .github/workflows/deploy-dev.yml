@@ -1,0 +1,192 @@
+name: Deploy (dev)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+
+  # Set in repo → Settings → Secrets and variables → Actions:
+  #
+  # Variables:
+  #   AWS_ACCOUNT_ID   = 882884689403
+  #   AWS_ROLE_ARN_DEV = (terraform output -raw github_actions_role_arn)
+  #
+  # Secrets:
+  #   NEON_API_KEY     = napi_...
+  #
+  # S3 bucket names + github_repo_name are in terraform.tfvars (committed, no secrets).
+
+jobs:
+  # 1. Terraform — creates/updates all infrastructure.
+  terraform:
+    runs-on: ubuntu-latest
+    outputs:
+      ecr_api:       ${{ steps.ecr.outputs.api }}
+      ecr_discovery: ${{ steps.ecr.outputs.discovery }}
+      ecr_upload:    ${{ steps.ecr.outputs.upload }}
+      ecr_responses: ${{ steps.ecr.outputs.responses }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEV }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: terraform/envs/dev
+        run: terraform init -input=false
+
+      - name: Terraform apply
+        working-directory: terraform/envs/dev
+        env:
+          TF_VAR_neon_api_key: ${{ secrets.NEON_API_KEY }}
+        run: terraform apply -auto-approve -input=false
+
+      - name: Export ECR repo URLs
+        id: ecr
+        working-directory: terraform/envs/dev
+        run: |
+          echo "api=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-api"]')" >> "$GITHUB_OUTPUT"
+          echo "discovery=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-discovery"]')" >> "$GITHUB_OUTPUT"
+          echo "upload=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-upload"]')" >> "$GITHUB_OUTPUT"
+          echo "responses=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-responses"]')" >> "$GITHUB_OUTPUT"
+
+  # 2. Run Prisma migrations against Neon.
+  #    Fetches the connection URI from terraform output directly (avoids passing the
+  #    password through inter-job outputs where it could be logged).
+  migrate:
+    needs: terraform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEV }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: terraform/envs/dev
+        run: terraform init -input=false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations
+        working-directory: terraform/envs/dev
+        env:
+          TF_VAR_neon_api_key: ${{ secrets.NEON_API_KEY }}
+        run: |
+          DATABASE_URL=$(terraform output -raw neon_connection_uri)
+          echo "::add-mask::$DATABASE_URL"
+          export DATABASE_URL
+          cd ../../..
+          npx prisma migrate deploy
+
+  # 3. Build all 4 images in parallel (after migrations are applied).
+  build:
+    needs: [terraform, migrate]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: api
+            entry: workers/api/lambda
+            ecr_output: ecr_api
+          - name: discovery
+            entry: workers/discovery/lambda
+            ecr_output: ecr_discovery
+          - name: upload
+            entry: workers/upload/lambda
+            ecr_output: ecr_upload
+          - name: responses
+            entry: workers/responses/lambda
+            ecr_output: ecr_responses
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEV }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push
+        env:
+          ECR_URI: ${{ needs.terraform.outputs[matrix.ecr_output] }}
+        run: |
+          docker buildx build \
+            -f Dockerfile.lambda \
+            --platform linux/arm64 \
+            --build-arg LAMBDA_ENTRY=${{ matrix.entry }} \
+            -t $ECR_URI:${{ github.sha }} \
+            -t $ECR_URI:latest \
+            --push .
+
+  # 4. Update all 4 Lambdas after images are pushed.
+  deploy:
+    needs: [terraform, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - function: sparient-dev-api
+            ecr_output: ecr_api
+          - function: sparient-dev-discovery
+            ecr_output: ecr_discovery
+          - function: sparient-dev-upload
+            ecr_output: ecr_upload
+          - function: sparient-dev-responses
+            ecr_output: ecr_responses
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEV }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Update Lambda
+        env:
+          ECR_URI: ${{ needs.terraform.outputs[matrix.ecr_output] }}
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ matrix.function }} \
+            --image-uri $ECR_URI:${{ github.sha }} \
+            --publish
+
+      - name: Wait for update
+        run: aws lambda wait function-updated --function-name ${{ matrix.function }}

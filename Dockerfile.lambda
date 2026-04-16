@@ -1,0 +1,45 @@
+# Shared Dockerfile for all three Lambdas (api, discovery, upload).
+# The LAMBDA_ENTRY build-arg selects which compiled file exposes the handler.
+#
+# Build example:
+#   docker build -f Dockerfile.lambda \
+#     --build-arg LAMBDA_ENTRY=workers/api/lambda \
+#     --platform linux/arm64 -t sparient-api:latest .
+
+ARG LAMBDA_ENTRY
+
+# ---------- build stage ----------
+FROM public.ecr.aws/lambda/nodejs:20 AS build
+ARG LAMBDA_ENTRY
+
+WORKDIR /build
+COPY package*.json ./
+COPY prisma ./prisma
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src ./src
+
+# Generate the Prisma client with the Lambda-targeted binaries already declared in schema.prisma.
+RUN npx prisma generate
+
+# Bundle the selected entry to a single file. esbuild keeps @prisma/client external
+# because its generated binary engine lives on disk, not in the bundle.
+RUN npx --yes esbuild@0.21.5 \
+      "src/${LAMBDA_ENTRY}.ts" \
+      --bundle --platform=node --target=node20 \
+      --external:@prisma/client --external:.prisma/client \
+      --outfile=dist/index.js
+
+# ---------- runtime stage ----------
+FROM public.ecr.aws/lambda/nodejs:20
+ARG LAMBDA_ENTRY
+
+# Bundled handler.
+COPY --from=build /build/dist/index.js ${LAMBDA_TASK_ROOT}/index.js
+
+# Prisma generated client + engine binary (single arch — set at build time via --platform).
+COPY --from=build /build/node_modules/.prisma ${LAMBDA_TASK_ROOT}/node_modules/.prisma
+COPY --from=build /build/node_modules/@prisma/client ${LAMBDA_TASK_ROOT}/node_modules/@prisma/client
+
+CMD ["index.handler"]
