@@ -68,7 +68,7 @@ class S3Service {
   // key rather than overwriting the in-flight object. No reliance on S3 bucket versioning.
   buildSourceKey(params: SourceKeyParams): string {
     const version = params.modifiedAt.getTime();
-    return `${params.institutionId}/courses/${params.canvasCourseId}/files/${params.canvasFileId}/v-${version}/${params.fileName}`;
+    return `${params.institutionId}/${params.canvasCourseId}/${params.canvasFileId}/v-${version}/${params.fileName}`;
   }
 }
 
