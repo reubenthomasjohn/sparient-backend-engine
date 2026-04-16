@@ -325,6 +325,12 @@ resource "aws_sfn_state_machine" "course_workflow" {
         ItemsPath     = "$.discovery.uploadJobs"
         MaxConcurrency = 10
         ResultPath    = "$.uploadResults"
+        // Inject institutionId from parent context into each Map item
+        ItemSelector = {
+          "sourceFileId.$"  = "$$.Map.Item.Value.sourceFileId"
+          "modifiedAtMs.$"  = "$$.Map.Item.Value.modifiedAtMs"
+          "institutionId.$" = "$.discovery.institutionId"
+        }
         ItemProcessor = {
           ProcessorConfig = {
             Mode = "INLINE"
