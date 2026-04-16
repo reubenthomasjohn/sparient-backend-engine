@@ -2,12 +2,9 @@ import prisma from '../../db/client';
 import { UploadJob } from '../../queue';
 import { SourceRegistry } from '../../services/sources/SourceRegistry';
 import { s3Service } from '../../services/storage/S3Service';
-import { BatchBuilder } from '../../services/sync/BatchBuilder';
 import { computeFailureUpdate } from '../../utils/failure';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-
-const batchBuilder = new BatchBuilder();
 
 export async function handleUploadJob(job: UploadJob): Promise<void> {
   const row = await prisma.sourceFile.findUnique({
@@ -118,10 +115,6 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
     }
 
     logger.info('Upload: success', { sourceFileId: row.id, s3Key });
-
-    // Build a batch immediately so the file doesn't have to wait for the next discovery.
-    // BatchBuilder's conditional claim makes concurrent calls safe.
-    await batchBuilder.buildForCourse(row.course.institution, row.course);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     const fu = computeFailureUpdate(row, reason);
