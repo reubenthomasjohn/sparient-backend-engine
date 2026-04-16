@@ -159,7 +159,7 @@ dist/
 .DS_Store
 .idea
 tmp-resolvers
-package-lock.json
+# package-lock.json — committed for reproducible builds
 flow-typed
 yarn.lock
 bun.lock
