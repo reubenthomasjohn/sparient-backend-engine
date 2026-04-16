@@ -3,6 +3,15 @@ name: Deploy (dev)
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'prisma/**'
+      - 'terraform/**'
+      - 'Dockerfile.lambda'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - '.github/workflows/deploy-dev.yml'
   workflow_dispatch: {}
 
 permissions:
