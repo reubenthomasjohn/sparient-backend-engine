@@ -13,8 +13,11 @@ const configSchema = z.object({
     url: z.string().min(1, 'DATABASE_URL is required'),
   }),
   aws: z.object({
-    accessKeyId: z.string().min(1, 'AWS_ACCESS_KEY_ID is required'),
-    secretAccessKey: z.string().min(1, 'AWS_SECRET_ACCESS_KEY is required'),
+    // Optional — the SDK uses the default credential chain (Lambda role, env vars, ~/.aws).
+    // Only needed if you want to override credentials explicitly (e.g. local dev with a
+    // specific IAM user). Most setups leave these unset.
+    accessKeyId: z.string().optional(),
+    secretAccessKey: z.string().optional(),
     region: z.string().default('us-east-1'),
     s3SourceBucket: z.string().min(1, 'S3_SOURCE_BUCKET is required'),
     s3RemediatedBucket: z.string().min(1, 'S3_REMEDIATED_BUCKET is required'),

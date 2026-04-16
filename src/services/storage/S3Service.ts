@@ -16,13 +16,9 @@ class S3Service {
   private readonly client: S3Client;
 
   constructor() {
-    this.client = new S3Client({
-      region: config.aws.region,
-      credentials: {
-        accessKeyId: config.aws.accessKeyId,
-        secretAccessKey: config.aws.secretAccessKey,
-      },
-    });
+    // No explicit credentials — the SDK uses the default credential chain:
+    // Lambda execution role in prod, env vars / ~/.aws in local dev.
+    this.client = new S3Client({ region: config.aws.region });
   }
 
   // Streams body to S3 via multipart upload — works for files of any size without buffering.
