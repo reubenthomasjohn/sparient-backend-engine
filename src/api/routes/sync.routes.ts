@@ -28,7 +28,7 @@ router.post(
         logger.info('Sync: forced full re-sync', { institutionId });
       }
 
-      await syncOrchestrator.syncInstitution(institutionId);
+      await syncOrchestrator.syncInstitution(institutionId, undefined, force);
       res.json({ success: true, message: force ? 'Full re-sync enqueued' : 'Sync enqueued', institutionId });
     } catch (err) {
       next(err);
@@ -62,7 +62,7 @@ router.post(
         logger.info('Sync: forced full re-sync', { institutionId, courseId });
       }
 
-      await syncOrchestrator.syncInstitution(institutionId, courseId);
+      await syncOrchestrator.syncInstitution(institutionId, courseId, force);
       res.json({
         success: true,
         message: force ? 'Full re-sync enqueued' : 'Course sync enqueued',

@@ -1,254 +1,235 @@
 # AWS Deployment Architecture (dev)
 
-Target region: **us-east-2**. Single environment for now.
+Target region: **us-east-2**. Single environment, Neon Postgres, no VPC.
 
 ---
 
-## High-level picture
+## System flow
 
 ```
-                                  ┌─────────────────────┐
-                                  │   Canvas LMS (ext)  │
-                                  └──────────┬──────────┘
-                                             │  HTTPS (list, download, writeback)
-                                             │  via NAT Gateway
-                                             │
-┌──────────────────┐   HTTPS       ┌─────────┴──────────────────────────┐
-│    Connectivo    │◀─────────────▶│       API Gateway (HTTP API)       │
-│   (external)     │               │              │                     │
-└──────────────────┘               │              ▼                     │
-                                   │     ┌────────────────┐             │
-                                   │     │   api Lambda   │             │
-                                   │     │ (Express app,  │             │
-                                   │     │  Docker image) │             │
-                                   │     └───┬────────┬───┘             │
-                                   └─────────┼────────┼─────────────────┘
-                                             │        │
-                                             │        │ enqueue DiscoveryJob
-                                             │        │ (force / manual sync)
-                                             │        ▼
-                                             │   ┌───────────────────┐
-                                             │   │ discovery-queue   │◀───── EventBridge rule
-                                             │   │       (SQS)       │       (nightly 02:00)
-                                             │   │   + DLQ           │       payload: {type:"sweep"}
-                                             │   └────────┬──────────┘
-                                             │            │
-                                             │            ▼
-                                             │   ┌───────────────────┐
-                                             │   │ discovery Lambda  │
-                                             │   │  (Docker image)   │
-                                             │   │  MaxConcurrency=5 │
-                                             │   │                   │
-                                             │   │ sweep ─► fan out: │
-                                             │   │  • due insts      │
-                                             │   │  • retry-eligible │
-                                             │   │                   │
-                                             │   │ discover ─► list  │
-                                             │   │   Canvas, detect  │
-                                             │   │   changes, enq    │
-                                             │   │   UploadJobs      │
-                                             │   └────────┬──────────┘
-                                             │            │ enqueue UploadJob
-                                             │            ▼
-                                             │   ┌───────────────────┐
-                                             │   │   upload-queue    │
-                                             │   │      (SQS)        │
-                                             │   │     + DLQ         │
-                                             │   └────────┬──────────┘
-                                             │            │
-                                             │            ▼
-                                             │   ┌───────────────────┐
-                                             │   │  upload Lambda    │
-                                             │   │  (Docker image)   │
-                                             │   │ MaxConcurrency=10 │
-                                             │   │                   │
-                                             │   │ • re-fetch URL    │
-                                             │   │ • stream Canvas ► │
-                                             │   │   S3 source bkt   │
-                                             │   │ • monotonic UPD   │
-                                             │   │ • BatchBuilder    │
-                                             │   │   claim           │
-                                             │   └────────┬──────────┘
-                                             │            │ PutObject
-                                             │            ▼
-                                             │    ┌──────────────────┐
-                                             │    │  S3 source bkt   │
-                                             │    │  (already exists)│
-                                             │    └──────────────────┘
-                                             │
-                                             ▼
-                                   ┌────────────────────────┐
-                                   │      RDS Proxy         │◀── Lambdas connect here, not
-                                   │  (pooled connections)  │    directly to RDS. Absorbs
-                                   └──────────┬─────────────┘    cold-start churn.
-                                              │
-                                              ▼
-                                   ┌────────────────────────┐
-                                   │    RDS PostgreSQL      │
-                                   │    db.t4g.micro        │
-                                   │  private subnets only  │
-                                   │    20 GB gp3, single-AZ│
-                                   └────────────────────────┘
+                              You / Postman / Canvas LTI
+                                        │
+                                        ▼
+                              ┌───────────────────┐
+                              │   API Lambda       │  Express app
+                              │  (API Gateway)     │  POST /sync, GET /batches, etc.
+                              └────────┬───────────┘
+                                       │
+                         POST /sync/institutions/:id
+                                       │ sends {type: "discover", institutionId, courseId?}
+                                       ▼
+                              ┌───────────────────┐
+             EventBridge ────▶│  discovery queue   │  SQS
+          (daily 02:00 UTC)   │      + DLQ         │
+          {type: "sweep"}     └────────┬───────────┘
+                                       │
+                                       ▼
+                              ┌───────────────────┐
+                              │ discovery Lambda   │
+                              │  MaxConcurrency=5  │
+                              │                    │
+                              │ sweep:             │
+                              │  • find due insts  │    1 discover msg per institution
+                              │  • retry failed    │
+                              │                    │
+                              │ discover:          │
+                              │  • list Canvas     │
+                              │    courses + files  │
+                              │  • FileChange      │
+                              │    Detector         │
+                              │  • enqueue 1       │
+                              │    UploadJob per    │
+                              │    changed file     │
+                              │  • BatchBuilder     │    for files already in S3
+                              │    + RequestPublisher│   writes request.json
+                              └───┬────────────┬────┘
+                                  │            │
+                  1 msg per file  │            │  request.json written after
+                                  ▼            │  batch is created
+                         ┌──────────────┐      │
+                         │ upload queue  │      │
+                         │    (SQS)      │      │
+                         │   + DLQ       │      │
+                         └──────┬───────┘      │
+                                │              │
+                                ▼              │
+                       ┌──────────────────┐    │
+                       │  upload Lambda   │    │
+                       │ MaxConcurrency=10│    │
+                       │                  │    │
+                       │ • re-fetch Canvas│    │
+                       │   URL (fresh)    │    │
+                       │ • stream to S3   │    │
+                       │   source bucket  │    │
+                       │ • monotonic      │    │
+                       │   UPDATE guard   │    │
+                       │ • BatchBuilder   │    │    also writes request.json
+                       │   + RequestPub   │────┘    for newly uploaded files
+                       └──────────────────┘
+                                │
+                                ▼
+                       ┌──────────────────┐     ┌──────────────────────────────┐
+                       │  S3 source bkt   │     │ S3: sparient-remediation-     │
+                       │ (connectivo-     │     │     requests/                 │
+                       │  incoming)       │     │   <instId>/<courseId>/        │
+                       └──────────────────┘     │   <batchId>.json             │
+                                                └──────────────┬───────────────┘
+                                                               │
+                                          Connectivo polls this bucket,
+                                          downloads source files from source bkt,
+                                          remediates, uploads PDFs to remediated bkt,
+                                          writes response.json ─────────────────────┐
+                                                                                    │
+                       ┌──────────────────┐                                         ▼
+                       │ S3 remediated bkt│     ┌──────────────────────────────┐
+                       │ (connectivo-     │     │ S3: sparient-remediation-     │
+                       │  remediated)     │     │     responses/                │
+                       └──────────────────┘     │   <instId>/<courseId>/        │
+                                                │   <batchId>.json             │
+                                                └──────────────┬───────────────┘
+                                                               │ S3 event notification
+                                                               ▼
+                                                      ┌───────────────────┐
+                                                      │ responses queue   │  SQS
+                                                      │    + DLQ          │
+                                                      └────────┬──────────┘
+                                                               │
+                                                               ▼
+                                                      ┌───────────────────┐
+                                                      │ responses Lambda  │
+                                                      │                   │
+                                                      │ • Zod-validate    │
+                                                      │   response.json   │
+                                                      │ • RemediationSvc  │
+                                                      │   writes outcomes │
+                                                      │   to Neon DB      │
+                                                      │ • batch → terminal│
+                                                      └───────────────────┘
 
-                                  ┌───────────────────────────────┐
-                                  │ S3 remediated bucket (exists) │
-                                  │  written by Connectivo, read  │
-                                  │  references stored on batch_  │
-                                  │  files.remediated_s3_key      │
-                                  └───────────────────────────────┘
+                                                All Lambdas ──▶ Neon Postgres
+                                                               (public endpoint,
+                                                                TLS enforced)
 ```
-
-All Lambdas run in the VPC's private subnets. They reach Canvas and SSM over a NAT Gateway, reach S3 over the public AWS endpoint (still via NAT, no VPC endpoint configured yet), and reach RDS through RDS Proxy. RDS itself only accepts traffic from the proxy's security group.
 
 ---
 
 ## Components
 
-### Compute — all Lambda, all Docker, all arm64
+### Lambdas (4 total, all Docker x86_64)
 
-| Lambda | Trigger | Concurrency | Memory | Purpose |
-|---|---|---|---|---|
-| `api` | API Gateway (HTTP API) | 1 provisioned (always warm) | 1024 MB | Express app wrapped by `@codegenie/serverless-express` |
-| `discovery` | SQS (`discovery-queue`) | MaxConcurrency = 5 | 1024 MB | Handles `sweep` and `discover` messages |
-| `upload` | SQS (`upload-queue`) | MaxConcurrency = 10 | 1024 MB | Streams one Canvas file to S3, runs BatchBuilder |
+| Lambda | Trigger | MaxConcurrency | Purpose |
+|---|---|---|---|
+| `sparient-dev-api` | API Gateway (HTTP API) | account default | Express app: sync triggers, batch queries, admin endpoints |
+| `sparient-dev-discovery` | discovery queue (SQS) | 5 | `sweep`: find due institutions + retries. `discover` (institution): list courses, fan out per course. `discover` (course): list files, detect changes, enqueue uploads, batch + publish |
+| `sparient-dev-upload` | upload queue (SQS) | 10 | Stream one Canvas file → S3 source bucket, then BatchBuilder + RequestPublisher |
+| `sparient-dev-responses` | responses queue (SQS) | 5 | Read response.json from S3, validate, write outcomes to DB |
 
-Concurrency caps are set on the SQS event source mapping so a large `force=true` can't overwhelm Canvas. Provisioned concurrency on the API Lambda keeps one instance warm so Connectivo polls land on an already-initialized Prisma client.
+All Lambdas: 1024 MB memory, 15-min timeout (workers), 30s timeout (API). No VPC attachment — Neon is publicly reachable.
 
-Images are built with a shared `Dockerfile.lambda` (multi-stage, esbuild-bundled, only the `rhel-openssl-3.0.x` + `linux-arm64-openssl-3.0.x` Prisma engine binaries included). Target image size: ~150–200 MB, cold start ~500–800 ms for workers and ~300 ms for warm API invocations.
+### SQS Queues (3 + 3 DLQs)
 
-### Queues
+| Queue | Producer | Consumer | Notes |
+|---|---|---|---|
+| `sparient-dev-discovery` | API Lambda (manual sync), EventBridge (daily sweep) | discovery Lambda | Two message shapes: `sweep` and `discover` |
+| `sparient-dev-upload` | discovery Lambda | upload Lambda | One message per changed file |
+| `sparient-dev-responses` | S3 event notification (response bucket) | responses Lambda | Triggered when Connectivo writes response.json |
 
-| Queue | Consumer | Visibility timeout | Max receives | DLQ |
-|---|---|---|---|---|
-| `discovery-queue` | discovery Lambda | 15 min | 3 | `discovery-dlq` |
-| `upload-queue` | upload Lambda | 15 min | 3 | `upload-dlq` |
+Visibility timeout: 15 min. Max receives: 3 before DLQ. Messages in DLQs are inspected manually.
 
-Messages that exhaust `maxReceiveCount` land in the DLQ. No automatic consumer — you inspect via AWS console. (Alerting can come later.)
+### S3 Buckets (4 total)
 
-### Scheduled trigger — one rule only
+| Bucket | Owner | Purpose |
+|---|---|---|
+| `connectivo-incoming` | We write | Source files streamed from Canvas (content-addressed keys) |
+| `connectivo-remediated` | Connectivo writes | Remediated PDFs |
+| `sparient-remediation-requests` | We write | Per-batch request.json that Connectivo polls |
+| `sparient-remediation-responses` | Connectivo writes | Per-batch response.json → triggers S3 event → SQS → responses Lambda |
+
+Source + remediated buckets existed before Terraform. Request + response buckets are Terraform-managed.
+
+### Discovery fan-out
+
+Discovery uses two levels of fan-out to avoid overloading a single Lambda:
+
+```
+EventBridge / API trigger
+        │
+        ▼
+{type: "discover", institutionId}          ── institution-level discover:
+        │                                      list courses from Canvas, upsert to DB,
+        │                                      fan out one message per active course
+        ▼
+{type: "discover", institutionId, "101"}   ── course-level discover (own Lambda):
+{type: "discover", institutionId, "102"}      list files, FileChangeDetector,
+{type: "discover", institutionId, "103"}      enqueue UploadJobs, BatchBuilder
+...                                           + RequestPublisher
+        │
+        ▼ (one msg per changed file)
+{sourceFileId, modifiedAtMs}               ── upload Lambda (own Lambda):
+                                              stream Canvas → S3, BatchBuilder
+```
+
+- Each course gets its **own Lambda invocation** → parallel processing up to MaxConcurrency=5.
+- A heavy course can't block others — it runs in isolation.
+- If one course fails, only that SQS message retries (3 attempts → DLQ). Other courses are unaffected.
+- `force` flag flows through the fan-out so each course-level discover respects it.
+- Manual single-course sync (`POST /sync/.../courses/:courseId`) skips the institution fan-out and goes straight to the course-level discover.
+- For a heavy course with thousands of files: the expensive part (downloading from Canvas) is already fanned out to the upload queue (one message per file, MaxConcurrency=10). Discovery itself just lists files from Canvas (~1s per 100 files, paginated) and runs FileChangeDetector (DB queries). Even 10,000 files finishes in under a minute.
+
+### Scheduled trigger
 
 | Rule | Schedule | Target | Payload |
 |---|---|---|---|
-| `nightly-sweep` | `cron(0 2 * * ? *)` UTC | `discovery-queue` (SQS, direct) | `{ "type": "sweep" }` |
+| `sparient-dev-nightly-sweep` | `cron(0 2 * * ? *)` UTC | discovery queue (SQS, direct) | `{ "type": "sweep" }` |
 
-The `sweep` message handler does *both*:
-1. Find institutions where `sync_enabled AND (last_synced_at IS NULL OR last_synced_at + interval '1 day' < now())` → enqueue per-institution `DiscoveryJob`s.
-2. Find source_files where `last_outcome = 'failed' AND retry_count < max_retries`:
-   - Missing `s3_source_key` → enqueue an `UploadJob`
-   - Has `s3_source_key` → `UPDATE … SET batched_modified_at = NULL, last_outcome = NULL` so BatchBuilder re-claims them on the next pass.
-
-No separate retry Lambda, no separate retry schedule, no `next_retry_at` timing. `jobs/` and `RetryService` get deleted.
+The sweep handler:
+1. Finds institutions where `sync_enabled = true` and `last_synced_at + sync_interval_hours < now()` → enqueues one `{type: 'discover'}` per due institution.
+2. Finds retry-eligible failed files (`last_outcome = 'failed', retry_count < max_retries`) → re-enqueues uploads or clears `batched_modified_at` for re-batching.
+3. Releases stuck unpublished batches (`status = 'pending', request_written_at IS NULL`) → clears claims, marks batch failed.
 
 ### Database
 
-- **Engine:** `aws_db_instance` — RDS PostgreSQL 16, `db.t4g.micro`, 20 GB gp3, single-AZ.
-- **Access:** private subnets only. Lambdas reach it through **RDS Proxy** (connection pooling, TLS required). Password auto-generated by Terraform, stored in SSM Parameter Store (SecureString) and mirrored into Secrets Manager (RDS Proxy requirement — it can't read from SSM).
-- **Aurora swap path:** the DB lives in `modules/database`. Swap = replace `aws_db_instance` with `aws_rds_cluster` + `aws_rds_cluster_instance`. Outputs (`proxy_endpoint`, `db_password_param`) stay identical, so the Lambdas are unchanged.
+**Neon Postgres** (free tier). Publicly reachable, TLS enforced. No VPC, no NAT, no RDS Proxy needed. Terraform creates the Neon project via the `kislerdm/neon` provider; connection URI is passed to Lambdas as the `DATABASE_URL` env var.
 
-### Storage
+For prod: switch to RDS + RDS Proxy in a VPC. Terraform modules (`modules/networking`, `modules/database`) are already written. See `docs/TODO.md`.
 
-- Source + remediated S3 buckets **already exist**. Terraform does not create them — it only attaches IAM policies granting the Lambdas read/write access.
-- Bucket names come from `.env` → Terraform variables.
+### CI/CD
 
-### Secrets
+Push to `main` → GitHub Actions workflow (`deploy-dev.yml`):
+1. **Terraform apply** — creates/updates all infra (OIDC auth, no stored keys)
+2. **Prisma migrate deploy** — applies pending migrations against Neon
+3. **Build 4 Docker images** — parallel matrix, one per Lambda
+4. **Update 4 Lambdas** — `aws lambda update-function-code` with the commit SHA tag
 
-- DB password: SSM Parameter Store SecureString (`/sparient-dev/db/password`) + mirrored Secrets Manager secret for RDS Proxy.
-- Canvas credentials live per-institution in `institution.credentials` (JSONB in Postgres), not in AWS secret stores.
-- For dev, the full `DATABASE_URL` (including password) is baked into Lambda env vars by Terraform. Acceptable tradeoff for dev (tfstate is encrypted; Lambda env is IAM-gated). For prod, switch to fetching the password from SSM at cold-start and assembling the URL in-process.
+GitHub repo settings:
 
-### Networking
-
-- **VPC** with 2 AZ (us-east-2a, us-east-2b), 2 public subnets, 2 private subnets.
-- **Single NAT Gateway** in one public subnet — cheaper than one-per-AZ and fine for dev. Lambdas reach Canvas + S3 through it.
-- All Lambdas run in the private subnets; RDS and RDS Proxy also live in private subnets.
-- API Gateway is public (no VPC attachment needed); no custom domain, no ACM cert. Endpoint is the default `https://<api-id>.execute-api.us-east-2.amazonaws.com`.
-
-### Observability
-
-- CloudWatch Logs (default Lambda behaviour). 14-day retention via Terraform.
-- No dashboards/alarms at this stage.
+| Type | Name | Purpose |
+|---|---|---|
+| Variable | `AWS_ACCOUNT_ID` | ECR URI construction |
+| Variable | `AWS_ROLE_ARN_DEV` | OIDC role for CI |
+| Secret | `NEON_API_KEY` | Terraform Neon provider auth |
 
 ---
 
-## Schema additions needed for this architecture
-
-Add to `institutions`:
-
-```prisma
-syncEnabled       Boolean @default(true)  @map("sync_enabled")
-syncIntervalHours Int     @default(24)    @map("sync_interval_hours")
-```
-
-(The sweep uses these to decide who is due.)
-
----
-
-## Terraform layout
-
-```
-terraform/
-├── bootstrap/                  # one-time: creates the state bucket + lock table
-├── envs/
-│   └── dev/                    # only environment for now
-│       ├── main.tf             # composes the modules below + shared IAM role
-│       ├── variables.tf
-│       ├── outputs.tf
-│       ├── backend.tf          # s3 + dynamodb state
-│       └── terraform.tfvars    # you fill this in (image URIs, bucket names)
-└── modules/
-    ├── networking/             # VPC, 2 public + 2 private subnets, 1 NAT GW
-    ├── database/               # RDS + RDS Proxy + SSM password + Secrets Manager mirror
-    ├── queues/                 # 2 SQS queues + 2 DLQs
-    ├── ecr/                    # 3 ECR repos with "keep last 5" lifecycle
-    ├── lambda-api/             # api Lambda + API Gateway HTTP API + provisioned concurrency
-    ├── lambda-worker/          # generic module (reused for discovery + upload)
-    └── schedule/               # single EventBridge rule → discovery queue
-```
-
-The shared Lambda execution role and SG live in `envs/dev/main.tf` — both are one-off and don't need a module.
-
-Image builds are handled by **GitHub Actions CI** (`.github/workflows/deploy-dev.yml` and `deploy-single.yml`). CI pushes images to ECR tagged with both `:latest` and the commit SHA.
-
-Terraform references images by URI. The AWS profile used by Terraform is set via `var.aws_profile` (default `sparient`).
-
----
-
-## Estimated monthly cost (dev, us-east-2)
+## Cost (dev, us-east-2)
 
 | Item | Cost |
 |---|---|
-| NAT Gateway (1 AZ) | ~$32 |
-| RDS `db.t4g.micro` single-AZ + 20 GB gp3 | ~$15 |
-| RDS Proxy | ~$15 |
-| API Lambda provisioned concurrency (1 × 1 GB) | ~$5 |
-| Secrets Manager (1 secret for RDS Proxy) | ~$0.40 |
-| SQS / Lambda invocations / API GW / EventBridge | free tier |
-| ECR storage (3 repos × ~200 MB × $0.10) | ~$0.06 |
-| CloudWatch Logs (low volume) | ~$1 |
-| SSM Parameter Store (Standard params) | $0 |
-| **Total** | **~$68/mo** |
-
-The three big-ticket items (NAT, RDS Proxy, provisioned concurrency) are deliberate: NAT keeps RDS off the public internet, RDS Proxy absorbs Lambda's cold-start connection churn, provisioned concurrency keeps Connectivo polls warm.
+| Neon Postgres (free tier) | $0 |
+| SQS / Lambda / API GW / EventBridge | free tier |
+| ECR storage (4 repos) | ~$0.10 |
+| CloudWatch Logs | ~$1 |
+| **Total** | **~$1/mo** |
 
 ---
 
-## What Terraform does *not* do
+## First-time deploy
 
-- Build/push Docker images (GitHub Actions CI does that).
-- Create the S3 buckets (they exist).
-- Manage Canvas credentials (you put them in SSM manually, or via `aws ssm put-parameter` after first apply).
-- Create the first institution row (`npm run db:seed` still does that, run against the RDS endpoint).
-
----
-
-## Bring-up order (first-time deploy)
-
-See `terraform/README.md` for the full walkthrough. Summary:
-
-1. `cd terraform/bootstrap && terraform apply` → state bucket + lock table.
-2. Fill in `envs/dev/backend.tf` with the bucket name.
+1. `cd terraform/bootstrap && terraform apply` → state bucket + OIDC provider.
+2. Fill in `envs/dev/backend.tf` with the state bucket name.
 3. `cd terraform/envs/dev && terraform apply -target=module.ecr` → creates ECR repos.
-4. Push a bootstrap placeholder image (see `terraform/README.md`).
-5. `terraform apply` → the rest (VPC, RDS, RDS Proxy, SQS, Lambdas, API GW, EventBridge).
-6. Run Prisma migrations + seed against the RDS endpoint (from a temporary bastion / SSM session, since RDS is private).
-7. `curl "$(terraform output -raw api_endpoint)/health"`
+4. Push bootstrap placeholder images to all 4 repos (see `terraform/README.md`).
+5. `terraform apply` → the rest.
+6. Set GitHub Actions variables/secrets.
+7. `npm run db:migrate && npm run db:seed` against the Neon connection URI.
+8. Push to `main` → CI deploys real images.

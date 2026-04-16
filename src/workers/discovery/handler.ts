@@ -121,14 +121,28 @@ async function sweepUnpublishedBatches(): Promise<void> {
   logger.info('Discovery sweep: released unpublished batches', { count: stuck.length });
 }
 
-// Runs per-institution. Courses are upserted from the source system, then each eligible
-// course is discovered + batched. Idempotent — safe to run concurrently with other
-// discovery jobs for the same institution; per-file claims handle the races.
+// Two modes:
+//   Without courseId → "institution discover": list courses from Canvas, upsert to DB,
+//     fan out one {discover, institutionId, courseId} message per active course back to
+//     the same queue. Each course gets its own Lambda invocation → parallelism, isolation.
+//   With courseId → "course discover": process that one course (list files, detect changes,
+//     enqueue uploads, batch + publish).
 async function runDiscover(
   job: Extract<DiscoveryJob, { type: 'discover' }>,
 ): Promise<void> {
+  if (job.courseId) {
+    await discoverCourse(job.institutionId, job.courseId, job.force);
+  } else {
+    await discoverInstitution(job.institutionId, job.force);
+  }
+}
+
+// Lists all active-term courses from Canvas, upserts them to DB, then fans out one
+// discovery message per course. The heavy per-course work happens in separate Lambda
+// invocations — this one finishes quickly.
+async function discoverInstitution(institutionId: string, force?: boolean): Promise<void> {
   const institution = await prisma.institution.findUniqueOrThrow({
-    where: { id: job.institutionId },
+    where: { id: institutionId },
   });
   const sourceClient = SourceRegistry.getClient(institution);
 
@@ -156,57 +170,69 @@ async function runDiscover(
     });
   }
 
-  const activeIds = new Set(discoveredCourses.map((c) => c.externalId));
-  const canvasIds = job.courseId
-    ? (activeIds.has(job.courseId) ? [job.courseId] : [])
-    : Array.from(activeIds);
-
-  if (canvasIds.length === 0) {
-    logger.info('Discovery: no eligible courses', { institutionId: institution.id });
-    return;
+  // Fan out: one message per active course, back to the same discovery queue.
+  const activeIds = discoveredCourses.map((c) => c.externalId);
+  for (const courseId of activeIds) {
+    await discoveryQueue.send({ type: 'discover', institutionId, courseId, force });
   }
 
-  const courses = await prisma.course.findMany({
-    where: { institutionId: institution.id, canvasCourseId: { in: canvasIds } },
-  });
-
-  for (const course of courses) {
-    try {
-      // syncStartedAt is captured *before* listing files so any file uploaded during
-      // this run is caught on the next pass. See SYNC_EDGE_CASES.md §2.2.
-      const syncStartedAt = new Date();
-      const isInitialSync = !course.lastSyncedAt;
-
-      const discovered = await sourceClient.getFiles(
-        course.canvasCourseId,
-        course.lastSyncedAt,
-      );
-      const result = await changeDetector.detect(course, discovered);
-
-      for (const uj of result.toUploadJobs) {
-        await uploadQueue.send(uj);
-      }
-
-      await batchBuilder.buildForCourse(institution, course, { isInitialSync });
-
-      await prisma.course.update({
-        where: { id: course.id },
-        data: { lastSyncedAt: syncStartedAt },
-      });
-
-      logger.info('Discovery: course complete', {
-        courseId: course.id,
-        uploadsQueued: result.toUploadJobs.length,
-        deleted: result.deletedCount,
-      });
-    } catch (err) {
-      logger.error('Discovery: course failed', { courseId: course.id, error: err });
-    }
-  }
-
-  // Mark the institution itself as synced so the sweep's "due" check respects syncIntervalHours.
+  // Mark the institution as synced now — individual course failures are retried by SQS.
   await prisma.institution.update({
     where: { id: institution.id },
     data: { lastSyncedAt: new Date() },
+  });
+
+  logger.info('Discovery: institution fan-out complete', {
+    institutionId,
+    coursesEnqueued: activeIds.length,
+  });
+}
+
+// Processes a single course: list files, detect changes, enqueue uploads, batch + publish.
+// Runs in its own Lambda invocation — a heavy course can't block others.
+async function discoverCourse(
+  institutionId: string,
+  canvasCourseId: string,
+  force?: boolean,
+): Promise<void> {
+  const institution = await prisma.institution.findUniqueOrThrow({
+    where: { id: institutionId },
+  });
+  const sourceClient = SourceRegistry.getClient(institution);
+
+  const course = await prisma.course.findFirst({
+    where: { institutionId, canvasCourseId },
+  });
+  if (!course) {
+    logger.warn('Discovery: course not found in DB', { institutionId, canvasCourseId });
+    return;
+  }
+
+  const syncStartedAt = new Date();
+  const isInitialSync = !course.lastSyncedAt;
+
+  const discovered = await sourceClient.getFiles(
+    course.canvasCourseId,
+    force ? null : course.lastSyncedAt,
+  );
+  const result = await changeDetector.detect(course, discovered);
+
+  for (const uj of result.toUploadJobs) {
+    await uploadQueue.send(uj);
+  }
+
+  // Batch any files already in S3 from a previous upload pass.
+  await batchBuilder.buildForCourse(institution, course, { isInitialSync });
+
+  await prisma.course.update({
+    where: { id: course.id },
+    data: { lastSyncedAt: syncStartedAt },
+  });
+
+  logger.info('Discovery: course complete', {
+    courseId: course.id,
+    canvasCourseId,
+    uploadsQueued: result.toUploadJobs.length,
+    deleted: result.deletedCount,
   });
 }

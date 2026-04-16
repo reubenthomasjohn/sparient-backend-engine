@@ -6,9 +6,9 @@ import { logger } from '../../utils/logger';
 // the actual discovery happens in the discovery worker (in-process poller in dev,
 // Lambda in prod). Keeps the API responsive and the cron cheap.
 export class SyncOrchestrator {
-  async syncInstitution(institutionId: string, courseId?: string): Promise<void> {
+  async syncInstitution(institutionId: string, courseId?: string, force?: boolean): Promise<void> {
     await prisma.institution.findUniqueOrThrow({ where: { id: institutionId } });
-    await discoveryQueue.send({ type: 'discover', institutionId, courseId });
-    logger.info('SyncOrchestrator: discovery job enqueued', { institutionId, courseId });
+    await discoveryQueue.send({ type: 'discover', institutionId, courseId, force });
+    logger.info('SyncOrchestrator: discovery job enqueued', { institutionId, courseId, force });
   }
 }
