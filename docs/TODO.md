@@ -16,6 +16,17 @@ Currently using x86_64 because the GitHub Actions free tier (private repos) does
 - Use `ubuntu-24.04-arm` runner in the CI workflow
 - Benefit: ~20% cheaper Lambda runtime + ~15% faster cold starts
 
+## Slim down Lambda Docker images
+
+Currently the Dockerfile copies all production `node_modules` into the runtime image (`--packages=external` in esbuild + full `COPY node_modules`). This was done to stop chasing individual missing-module errors from Prisma 7's internal dependencies (`@prisma/client-runtime-utils`, `pg` via `@prisma/adapter-pg`, etc.).
+
+Image size is ~150–200 MB larger than necessary. To slim down:
+- Identify the exact set of runtime dependencies Prisma 7 needs (`.prisma/client`, `@prisma/client`, `@prisma/client-runtime-utils`, `@prisma/adapter-pg`, `pg`)
+- Switch esbuild back to selectively externalizing only those packages
+- Copy only those packages in the Dockerfile instead of all `node_modules`
+- Or: use a tree-shaking bundler that can trace Prisma's `require()` graph automatically
+- Target: ~100–150 MB image, ~500ms faster cold start
+
 ## Enable API Lambda provisioned concurrency
 
 Currently disabled (`api_provisioned_concurrency = 0`) because the AWS account's unreserved concurrency limit is too low (default 10 for new accounts). Provisioned concurrency reserves capacity from this pool, and AWS won't let it drop below 10 unreserved.
