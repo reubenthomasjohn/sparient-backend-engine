@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.env
+.env.*
+terraform
+*.md
+test
+coverage
+.DS_Store

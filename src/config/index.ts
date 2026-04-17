@@ -13,25 +13,25 @@ const configSchema = z.object({
     url: z.string().min(1, 'DATABASE_URL is required'),
   }),
   aws: z.object({
-    accessKeyId: z.string().min(1, 'AWS_ACCESS_KEY_ID is required'),
-    secretAccessKey: z.string().min(1, 'AWS_SECRET_ACCESS_KEY is required'),
+    // Optional — the SDK uses the default credential chain (Lambda role, env vars, ~/.aws).
+    // Only needed if you want to override credentials explicitly (e.g. local dev with a
+    // specific IAM user). Most setups leave these unset.
+    accessKeyId: z.string().optional(),
+    secretAccessKey: z.string().optional(),
     region: z.string().default('us-east-1'),
     s3SourceBucket: z.string().min(1, 'S3_SOURCE_BUCKET is required'),
     s3RemediatedBucket: z.string().min(1, 'S3_REMEDIATED_BUCKET is required'),
-  }),
-  connectivo: z.object({
-    apiKeySecret: z.string().min(1, 'CONNECTIVO_API_KEY_SECRET is required'),
+    s3RequestsBucket: z.string().min(1, 'S3_REQUESTS_BUCKET is required'),
+    s3ResponsesBucket: z.string().min(1, 'S3_RESPONSES_BUCKET is required'),
+    courseWorkflowArn: z.string().optional(), // SFN state machine ARN — set in prod, unset in local dev
   }),
   jobs: z.object({
-    syncCronSchedule: z.string().default('0 2 * * *'),
-    retryCronSchedule: z.string().default('0 */2 * * *'),
     retryBaseDelayMinutes: z.coerce.number().default(30),
   }),
   // If queue URLs are set, SqsQueue is used; otherwise InMemoryQueue runs in-process.
   // Local dev can leave these unset — the consumers are started by server.ts.
   queue: z.object({
     discoveryUrl: z.string().optional(),
-    uploadUrl: z.string().optional(),
     startConsumers: z.coerce.boolean().default(true),
   }),
 });
@@ -51,18 +51,15 @@ const parsed = configSchema.safeParse({
     region: process.env.AWS_REGION,
     s3SourceBucket: process.env.S3_SOURCE_BUCKET,
     s3RemediatedBucket: process.env.S3_REMEDIATED_BUCKET,
-  },
-  connectivo: {
-    apiKeySecret: process.env.CONNECTIVO_API_KEY_SECRET,
+    s3RequestsBucket: process.env.S3_REQUESTS_BUCKET,
+    s3ResponsesBucket: process.env.S3_RESPONSES_BUCKET,
+    courseWorkflowArn: process.env.COURSE_WORKFLOW_ARN,
   },
   jobs: {
-    syncCronSchedule: process.env.SYNC_CRON_SCHEDULE,
-    retryCronSchedule: process.env.RETRY_CRON_SCHEDULE,
     retryBaseDelayMinutes: process.env.RETRY_BASE_DELAY_MINUTES,
   },
   queue: {
     discoveryUrl: process.env.SQS_DISCOVERY_URL,
-    uploadUrl: process.env.SQS_UPLOAD_URL,
     startConsumers: process.env.QUEUE_START_CONSUMERS,
   },
 });

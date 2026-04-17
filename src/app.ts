@@ -2,14 +2,17 @@ import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
-import connectivoRoutes from './api/routes/connectivo.routes';
 import institutionRoutes from './api/routes/institutions.routes';
 import syncRoutes from './api/routes/sync.routes';
 import batchRoutes from './api/routes/batches.routes';
+import adminRoutes from './api/routes/admin.routes';
 import { errorHandler } from './api/middleware/errorHandler.middleware';
 import { logger } from './utils/logger';
 
 const app = express();
+
+// Trust the first proxy (API Gateway / ALB) so X-Forwarded-For is used for rate limiting.
+app.set('trust proxy', 1);
 
 // Security headers
 app.use(helmet());
@@ -38,10 +41,10 @@ app.use(
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // Routes
-app.use('/api/v1/connectivo', connectivoRoutes);
 app.use('/api/v1/institutions', institutionRoutes);
 app.use('/api/v1/sync', syncRoutes);
 app.use('/api/v1/batches', batchRoutes);
+app.use('/api/v1/admin', adminRoutes);
 
 // Global error handler — must be last
 app.use(errorHandler);

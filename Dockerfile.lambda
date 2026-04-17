@@ -1,0 +1,48 @@
+# Shared Dockerfile for all three Lambdas (api, discovery, upload).
+# The LAMBDA_ENTRY build-arg selects which compiled file exposes the handler.
+#
+# Build example:
+#   docker build -f Dockerfile.lambda \
+#     --build-arg LAMBDA_ENTRY=workers/api/lambda \
+#     -t sparient-api:latest .
+
+ARG LAMBDA_ENTRY
+
+# ---------- build stage ----------
+FROM public.ecr.aws/lambda/nodejs:20 AS build
+ARG LAMBDA_ENTRY
+
+WORKDIR /build
+COPY package*.json ./
+COPY prisma ./prisma
+RUN npm ci
+
+COPY tsconfig.json ./
+COPY src ./src
+
+# Generate the Prisma client with the Lambda-targeted binaries already declared in schema.prisma.
+RUN npx prisma generate
+
+# Bundle the selected entry to a single file. All node_modules are kept external —
+# they're copied wholesale into the runtime stage. This avoids chasing individual
+# packages that Prisma or its adapters require() internally.
+RUN npx --yes esbuild@0.21.5 \
+      "src/${LAMBDA_ENTRY}.ts" \
+      --bundle --platform=node --target=node20 \
+      --packages=external \
+      --outfile=dist/index.js
+
+# Prune devDependencies so the runtime image doesn't carry tsc, ts-node-dev, etc.
+RUN npm prune --omit=dev
+
+# ---------- runtime stage ----------
+FROM public.ecr.aws/lambda/nodejs:20
+ARG LAMBDA_ENTRY
+
+# Bundled handler.
+COPY --from=build /build/dist/index.js ${LAMBDA_TASK_ROOT}/index.js
+
+# All production node_modules (prisma, pg, axios, etc).
+COPY --from=build /build/node_modules ${LAMBDA_TASK_ROOT}/node_modules
+
+CMD ["index.handler"]

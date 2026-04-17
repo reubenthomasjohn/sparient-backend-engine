@@ -1,4 +1,6 @@
-// Shape of a batch we expose to Connectivo via GET /connectivo/batches
+// Shape of the request.json we write to the requests bucket per batch.
+// Connectivo polls the bucket and processes any new file at:
+//   s3://sparient-remediation-requests/<institutionId>/<courseId>/<batchId>.json
 export interface ConnectivoBatchPayload {
   batch_id: string;
   created_at: string;
@@ -6,6 +8,12 @@ export interface ConnectivoBatchPayload {
   institution_id: string;
   course_id: string;
   s3_source_bucket: string;
+  // Where Connectivo should put the actual remediated PDFs.
+  s3_remediated_bucket: string;
+  // Where Connectivo should write the response.json. Convention: same path as the
+  // request, just in the responses bucket.
+  response_s3_bucket: string;
+  response_s3_key: string;
   files: ConnectivoFilePayload[];
 }
 
@@ -18,46 +26,59 @@ export interface ConnectivoFilePayload {
   s3_key: string;
 }
 
-// Shape of the results Connectivo POSTs back to us
-export interface ConnectivoResultsPayload {
-  batch: {
-    id: string;
-    external_batch_id: string;
-    state: string;
-    started_at: string;
-    completed_at: string;
-    summary: {
-      total_files: number;
-      total_pages: number;
-      succeeded: number;
-      failed: number;
-      requires_review: number;
-      total_issues_found: number;
-      total_issues_fixed: number;
-    };
-  };
-  folders: ConnectivoFolderResult[];
-}
+// ---------------------------------------------------------------------------
+// Response.json — shape of what Connectivo writes to the responses bucket.
+// Both Zod schemas (runtime validation) and TS interfaces (compile-time) live
+// here so the contract is in one file.
+// ---------------------------------------------------------------------------
 
-export interface ConnectivoFolderResult {
-  path: string;
-  files: ConnectivoFileResult[];
-}
+import { z } from 'zod';
 
-export interface ConnectivoFileResult {
-  file_id: string;
-  file_name: string;
-  state: 'Completed' | 'CompletedWithWarnings' | 'Failed';
-  quality_label: 'A' | 'AA' | 'AAA' | null;
-  remediated_path: string | null;
-  total_pages: number;
-  processing_time_seconds: number;
-  verapdf_errors: number;
-  verapdf_warnings: number;
-  issues_by_category: Record<string, {
-    found: number;
-    fixed: number;
-    remaining: number;
-  }>;
-  error: string | null;
-}
+const issueCategorySchema = z.object({
+  found: z.number(),
+  fixed: z.number(),
+  remaining: z.number(),
+});
+
+const fileResultSchema = z.object({
+  file_id: z.string().min(1),
+  file_name: z.string(),
+  state: z.enum(['Completed', 'CompletedWithWarnings', 'Failed']),
+  quality_label: z.enum(['A', 'AA', 'AAA']).nullable(),
+  remediated_path: z.string().nullable(),
+  total_pages: z.number(),
+  processing_time_seconds: z.number(),
+  verapdf_errors: z.number(),
+  verapdf_warnings: z.number(),
+  issues_by_category: z.record(z.string(), issueCategorySchema),
+  error: z.string().nullable(),
+});
+
+const folderResultSchema = z.object({
+  path: z.string(),
+  files: z.array(fileResultSchema),
+});
+
+export const connectivoResultsSchema = z.object({
+  batch: z.object({
+    id: z.string(),
+    external_batch_id: z.string(),
+    state: z.string(),
+    started_at: z.string(),
+    completed_at: z.string(),
+    summary: z.object({
+      total_files: z.number(),
+      total_pages: z.number(),
+      succeeded: z.number(),
+      failed: z.number(),
+      requires_review: z.number(),
+      total_issues_found: z.number(),
+      total_issues_fixed: z.number(),
+    }),
+  }),
+  folders: z.array(folderResultSchema),
+});
+
+export type ConnectivoResultsPayload = z.infer<typeof connectivoResultsSchema>;
+export type ConnectivoFolderResult = z.infer<typeof folderResultSchema>;
+export type ConnectivoFileResult = z.infer<typeof fileResultSchema>;

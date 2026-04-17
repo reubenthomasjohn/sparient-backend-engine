@@ -1,5 +1,5 @@
 import { Readable } from 'stream';
-import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, HeadObjectCommand, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
@@ -16,13 +16,9 @@ class S3Service {
   private readonly client: S3Client;
 
   constructor() {
-    this.client = new S3Client({
-      region: config.aws.region,
-      credentials: {
-        accessKeyId: config.aws.accessKeyId,
-        secretAccessKey: config.aws.secretAccessKey,
-      },
-    });
+    // No explicit credentials — the SDK uses the default credential chain:
+    // Lambda execution role in prod, env vars / ~/.aws in local dev.
+    this.client = new S3Client({ region: config.aws.region });
   }
 
   // Streams body to S3 via multipart upload — works for files of any size without buffering.
@@ -42,6 +38,23 @@ class S3Service {
     logger.info('S3: source file uploaded', { key });
   }
 
+  // Small JSON write (request.json or response.json). Not streamed — payloads are KBs.
+  async putJson(bucket: string, key: string, body: unknown): Promise<void> {
+    await this.client.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: JSON.stringify(body, null, 2),
+      ContentType: 'application/json',
+    }));
+    logger.info('S3: json written', { bucket, key });
+  }
+
+  async getJson<T>(bucket: string, key: string): Promise<T> {
+    const r = await this.client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const text = await r.Body!.transformToString();
+    return JSON.parse(text) as T;
+  }
+
   async fileExists(bucket: string, key: string): Promise<boolean> {
     try {
       await this.client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
@@ -55,7 +68,7 @@ class S3Service {
   // key rather than overwriting the in-flight object. No reliance on S3 bucket versioning.
   buildSourceKey(params: SourceKeyParams): string {
     const version = params.modifiedAt.getTime();
-    return `${params.institutionId}/courses/${params.canvasCourseId}/files/${params.canvasFileId}/v-${version}/${params.fileName}`;
+    return `${params.institutionId}/${params.canvasCourseId}/${params.canvasFileId}/v-${version}/${params.fileName}`;
   }
 }
 
