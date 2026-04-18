@@ -1,8 +1,12 @@
+import axios from 'axios';
 import { CanvasClient } from './CanvasClient';
+import { toDiscoveredFile } from './mappers';
 import { s3Service } from '../../storage/S3Service';
 import {
   DiscoveredFile,
+  ReplaceEligibility,
   ReplaceFileParams,
+  ReplaceResult,
   SupersedeFileParams,
   UploadNewFileParams,
 } from '../../../types/source';
@@ -17,11 +21,49 @@ import { logger } from '../../../utils/logger';
 //                    Canvas does not expose version history)
 //   - uploadNewFile: caller-supplied folder + name + rename (new file id)
 //   - supersedeFile: old file's folder + new name + rename, then delete the old
+//
+// replaceFile and supersedeFile return ReplaceResult — a 'skipped' status means the
+// source-side file has moved on since knownModifiedAt and we refused to clobber it.
+// Bulk callers log + continue; the method itself doesn't throw on ineligibility.
 export class CanvasFileReplacer {
   constructor(private readonly client: CanvasClient) {}
 
-  async replaceFile(params: ReplaceFileParams): Promise<DiscoveredFile> {
-    const existing = await this.client.getFile(params.replacesFileExternalId);
+  // Used standalone (pre-filter replace-ready files in a UI) and also called inside
+  // replaceFile + supersedeFile so the eligibility check can't be bypassed.
+  async isCanvasFileEligibleToReplace(
+    fileExternalId: string,
+    knownModifiedAt: Date,
+  ): Promise<ReplaceEligibility> {
+    let existing: CanvasFile;
+    try {
+      existing = await this.client.getFile(fileExternalId);
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        return { eligible: false, reason: 'deleted' };
+      }
+      throw err;
+    }
+
+    // Strict >: equal timestamps mean no drift since we observed. Canvas's modified_at
+    // has second-level precision which is plenty given our sync cadence.
+    const current = new Date(existing.modified_at);
+    if (current.getTime() > knownModifiedAt.getTime()) {
+      return { eligible: false, reason: 'modified', currentModifiedAt: current };
+    }
+    return { eligible: true, reason: null };
+  }
+
+  async replaceFile(params: ReplaceFileParams): Promise<ReplaceResult> {
+    const eligibility = await this.isCanvasFileEligibleToReplace(
+      params.fileExternalId,
+      params.knownModifiedAt,
+    );
+    if (!eligibility.eligible && eligibility.reason) {
+      this.logSkip('replace', params.fileExternalId, eligibility, params.knownModifiedAt);
+      return { status: 'skipped', reason: eligibility.reason };
+    }
+
+    const existing = await this.client.getFile(params.fileExternalId);
 
     logger.info('Canvas: replacing file in place', {
       fileId: existing.id,
@@ -40,7 +82,7 @@ export class CanvasFileReplacer {
       onDuplicate: 'overwrite',
     });
 
-    return toDiscovered(uploaded);
+    return { status: 'replaced', file: toDiscoveredFile(uploaded) };
   }
 
   async uploadNewFile(params: UploadNewFileParams): Promise<DiscoveredFile> {
@@ -54,11 +96,20 @@ export class CanvasFileReplacer {
       onDuplicate: 'rename',
     });
 
-    return toDiscovered(uploaded);
+    return toDiscoveredFile(uploaded);
   }
 
-  async supersedeFile(params: SupersedeFileParams): Promise<DiscoveredFile> {
-    const existing = await this.client.getFile(params.replacesFileExternalId);
+  async supersedeFile(params: SupersedeFileParams): Promise<ReplaceResult> {
+    const eligibility = await this.isCanvasFileEligibleToReplace(
+      params.fileExternalId,
+      params.knownModifiedAt,
+    );
+    if (!eligibility.eligible && eligibility.reason) {
+      this.logSkip('supersede', params.fileExternalId, eligibility, params.knownModifiedAt);
+      return { status: 'skipped', reason: eligibility.reason };
+    }
+
+    const existing = await this.client.getFile(params.fileExternalId);
 
     const courseId = await this.courseIdFromFile(existing);
     const body = await s3Service.getSourceFileBytes(params.s3Key);
@@ -74,9 +125,31 @@ export class CanvasFileReplacer {
     });
 
     // Only delete after upload succeeds — on failure the old file remains the source of truth.
-    await this.client.deleteFile(params.replacesFileExternalId);
+    await this.client.deleteFile(params.fileExternalId);
 
-    return toDiscovered(uploaded);
+    return { status: 'replaced', file: toDiscoveredFile(uploaded) };
+  }
+
+  private logSkip(
+    op: 'replace' | 'supersede',
+    fileId: string,
+    eligibility: ReplaceEligibility,
+    knownModifiedAt: Date,
+  ): void {
+    if (eligibility.reason === 'modified') {
+      // Both timestamps in one log line so ops can see exactly when Canvas was edited
+      // between our sync and the write-back.
+      logger.warn(`Canvas: skipping ${op} — file was modified in Canvas after our sync`, {
+        fileId,
+        knownModifiedAt: knownModifiedAt.toISOString(),
+        currentModifiedAt: eligibility.currentModifiedAt?.toISOString(),
+      });
+    } else if (eligibility.reason === 'deleted') {
+      logger.warn(`Canvas: skipping ${op} — file has been deleted from Canvas`, {
+        fileId,
+        knownModifiedAt: knownModifiedAt.toISOString(),
+      });
+    }
   }
 
   // Canvas's file object doesn't surface course_id directly — it only has folder_id
@@ -89,16 +162,4 @@ export class CanvasFileReplacer {
     }
     return folder.context_id.toString();
   }
-}
-
-function toDiscovered(f: CanvasFile): DiscoveredFile {
-  return {
-    externalId: f.id.toString(),
-    displayName: f.display_name,
-    fileName: f.filename,
-    mimeType: f['content-type'],
-    sizeBytes: f.size ?? null,
-    modifiedAt: new Date(f.modified_at),
-    downloadUrl: f.url,
-  };
 }

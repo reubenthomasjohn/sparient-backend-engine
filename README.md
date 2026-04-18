@@ -274,8 +274,9 @@ src/
 │   │   ├── SourceRegistry.ts          # Maps source_type → client
 │   │   └── canvas/
 │   │       ├── CanvasClient.ts        # Paginated Canvas HTTP client + 3-step upload
-│   │       ├── CanvasFileFetcher.ts   # Implements ISourceClient (read + delegates replace)
-│   │       └── CanvasFileReplacer.ts  # Push bytes from S3 back into Canvas (overwrite/new/supersede)
+│   │       ├── CanvasSourceClient.ts  # Implements ISourceClient (read + delegates replace)
+│   │       ├── CanvasFileReplacer.ts  # Push bytes from S3 back into Canvas (overwrite/new/supersede)
+│   │       └── mappers.ts             # CanvasFile → DiscoveredFile
 │   ├── storage/S3Service.ts           # S3 upload, putJson, getJson
 │   ├── sync/
 │   │   ├── FileChangeDetector.ts      # Bumps discovered_modified_at, clears outcomes
@@ -315,7 +316,7 @@ CI/CD: push to `main` → GitHub Actions runs Terraform apply → Prisma migrate
 
 ## Adding a New Source (e.g. SharePoint)
 
-1. Create `src/services/sources/sharepoint/SharePointFileFetcher.ts` implementing `ISourceClient`. The interface has two groups of methods:
+1. Create `src/services/sources/sharepoint/SharePointSourceClient.ts` implementing `ISourceClient`. The interface has two groups of methods:
    - **Read**: `getCourses`, `getFiles`, `getFile`, `downloadFileStream` — used by discovery + upload workers
    - **Write-back**: `replaceFile`, `uploadNewFile`, `supersedeFile` — used to push remediated files from the source S3 bucket back to the source system
 2. For the write-back methods, the bytes to upload live in the source bucket (the caller passes `s3Key`). Read them via `s3Service.getSourceFileBytes(key)` and POST to your source. For Canvas this is split into `CanvasFileReplacer` to keep the fetcher class lean — do the same if the write-back logic grows past a few methods.
@@ -325,10 +326,12 @@ CI/CD: push to `main` → GitHub Actions runs Terraform apply → Prisma migrate
 
 ### Write-back semantics (shared across sources)
 
-| Method | When to use | File id behavior |
-|---|---|---|
-| `replaceFile` | You want to replace an existing file in place under the same name. | Preserved — the source system keeps the same externalId so deep links / LTI references survive. |
-| `uploadNewFile` | You're uploading a brand-new file (no anchor to an existing one). | New id. Caller provides `courseExternalId`, `fileName` and optional `parentFolderId`. |
-| `supersedeFile` | The replacement has a different name from the old file but should logically replace it. | New id. Old file is deleted only after the upload succeeds. |
+| Method | When to use | File id behavior | Return |
+|---|---|---|---|
+| `replaceFile` | Replace an existing file in place under the same name. | Preserved — externalId survives so deep links / LTI references keep working. | `ReplaceResult` — `{ status: 'replaced', file }` or `{ status: 'skipped', reason }` if the source-side file has changed since `knownModifiedAt`. |
+| `uploadNewFile` | Upload a brand-new file (no anchor to an existing one). | New id. Caller provides `courseExternalId`, `fileName`, optional `parentFolderId`. | `DiscoveredFile` — no eligibility to check. |
+| `supersedeFile` | Replacement has a different name but should supersede an old file. | New id. Old file deleted only after the upload succeeds. | `ReplaceResult` — same skip semantics as `replaceFile`. |
+
+`replaceFile` and `supersedeFile` require `knownModifiedAt` (the source-side `modified_at` we observed when pulling the bytes). They run `isFileEligibleToReplace` internally and return `{ status: 'skipped' }` without uploading if the source file has been edited or deleted since — bulk callers log + continue instead of aborting the batch.
 
 For Canvas specifically: Canvas does **not** expose file version history in its UI. An overwrite simply updates the file's content + `modified_at`; prior versions are not retained or surfaced. If you need audit history, keep it in our own S3 (the content-addressed source keys already preserve every version).

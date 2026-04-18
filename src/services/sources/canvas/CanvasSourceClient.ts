@@ -3,11 +3,14 @@ import { Readable } from 'stream';
 import { Institution } from '@prisma/client';
 import { CanvasClient } from './CanvasClient';
 import { CanvasFileReplacer } from './CanvasFileReplacer';
+import { toDiscoveredFile } from './mappers';
 import { ISourceClient } from '../ISourceClient';
 import {
   DiscoveredCourse,
   DiscoveredFile,
+  ReplaceEligibility,
   ReplaceFileParams,
+  ReplaceResult,
   SupersedeFileParams,
   UploadNewFileParams,
 } from '../../../types/source';
@@ -47,19 +50,7 @@ function isSupportedFile(file: Pick<CanvasFile, 'filename'>): boolean {
   return SUPPORTED_EXTENSIONS.has(ext);
 }
 
-function toDiscovered(f: CanvasFile): DiscoveredFile {
-  return {
-    externalId: f.id.toString(),
-    displayName: f.display_name,
-    fileName: f.filename,
-    mimeType: f['content-type'],
-    sizeBytes: f.size ?? null,
-    modifiedAt: new Date(f.modified_at),
-    downloadUrl: f.url,
-  };
-}
-
-export class CanvasFileFetcher implements ISourceClient {
+export class CanvasSourceClient implements ISourceClient {
   private readonly client: CanvasClient;
   private readonly replacer: CanvasFileReplacer;
 
@@ -123,14 +114,14 @@ export class CanvasFileFetcher implements ISourceClient {
       kept: files.length,
     });
 
-    return files.map(toDiscovered);
+    return files.map(toDiscoveredFile);
   }
 
   async getFile(_courseExternalId: string, fileExternalId: string): Promise<DiscoveredFile | null> {
     try {
       const file = await this.client.getFile(fileExternalId);
       if (!isSupportedFile(file)) return null;
-      return toDiscovered(file);
+      return toDiscoveredFile(file);
     } catch (err) {
       // 404 = file deleted; null signals the caller to mark it deleted_from_source
       if (axios.isAxiosError(err) && err.response?.status === 404) return null;
@@ -146,7 +137,11 @@ export class CanvasFileFetcher implements ISourceClient {
     return response.data;
   }
 
-  replaceFile(params: ReplaceFileParams): Promise<DiscoveredFile> {
+  isFileEligibleToReplace(fileExternalId: string, knownModifiedAt: Date): Promise<ReplaceEligibility> {
+    return this.replacer.isCanvasFileEligibleToReplace(fileExternalId, knownModifiedAt);
+  }
+
+  replaceFile(params: ReplaceFileParams): Promise<ReplaceResult> {
     return this.replacer.replaceFile(params);
   }
 
@@ -154,7 +149,7 @@ export class CanvasFileFetcher implements ISourceClient {
     return this.replacer.uploadNewFile(params);
   }
 
-  supersedeFile(params: SupersedeFileParams): Promise<DiscoveredFile> {
+  supersedeFile(params: SupersedeFileParams): Promise<ReplaceResult> {
     return this.replacer.supersedeFile(params);
   }
 }
