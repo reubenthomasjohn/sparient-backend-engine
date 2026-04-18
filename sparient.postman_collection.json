@@ -11,7 +11,9 @@
     { "key": "institutionId",      "value": "" },
     { "key": "courseId",           "value": "" },
     { "key": "batchId",            "value": "" },
-    { "key": "canvasFileId",       "value": "" }
+    { "key": "canvasFileId",       "value": "" },
+    { "key": "canvasUploadUrl",    "value": "", "description": "Auto-populated by the 'Upload step 1' test script from the response's upload_url. Don't edit by hand." },
+    { "key": "canvasConfirmUrl",   "value": "", "description": "Auto-populated by the 'Upload step 2' test script from the Location header. Don't edit by hand." }
   ],
   "item": [
     {
@@ -90,6 +92,113 @@
           "name": "Get a single file",
           "request": {
             "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
+            ],
+            "url": {
+              "raw": "https://{{canvasDomain}}/api/v1/files/{{canvasFileId}}",
+              "host": ["https://{{canvasDomain}}"],
+              "path": ["api", "v1", "files", "{{canvasFileId}}"]
+            }
+          }
+        },
+        {
+          "name": "Upload step 1: notify Canvas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Captures upload_url so step 2 can POST to it without manual copy/paste.",
+                  "const r = pm.response.json();",
+                  "if (r.upload_url) pm.collectionVariables.set('canvasUploadUrl', r.upload_url);",
+                  "if (r.upload_params) console.log('upload_params (paste into step 2 body):', r.upload_params);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "description": "Step 1 of Canvas's 3-step file upload. Canvas responds with upload_url + upload_params. The test script auto-sets {{canvasUploadUrl}} and logs upload_params to the Postman console — copy them into step 2's form body.\n\non_duplicate=overwrite (default) replaces in place when name + parent_folder_id match an existing file (same file id preserved). on_duplicate=rename forces a new file.\n\nparent_folder_id is optional — omit to upload to the course root folder.",
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" },
+              { "key": "Content-Type",  "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "name",             "value": "remediated.pdf" },
+                { "key": "size",             "value": "12345" },
+                { "key": "content_type",     "value": "application/pdf" },
+                { "key": "parent_folder_id", "value": "",               "disabled": true },
+                { "key": "on_duplicate",     "value": "overwrite" }
+              ]
+            },
+            "url": {
+              "raw": "https://{{canvasDomain}}/api/v1/courses/{{courseId}}/files",
+              "host": ["https://{{canvasDomain}}"],
+              "path": ["api", "v1", "courses", "{{courseId}}", "files"]
+            }
+          }
+        },
+        {
+          "name": "Upload step 2: POST bytes to upload_url",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// If Canvas returned a 3xx redirect, capture Location for step 3. If it returned",
+                  "// 201 with the file object, we're done — clear canvasConfirmUrl as a signal.",
+                  "const loc = pm.response.headers.get('Location');",
+                  "if (pm.response.code >= 300 && pm.response.code < 400 && loc) {",
+                  "  pm.collectionVariables.set('canvasConfirmUrl', loc);",
+                  "  console.log('Redirected — run step 3 next.');",
+                  "} else {",
+                  "  pm.collectionVariables.set('canvasConfirmUrl', '');",
+                  "  console.log('201 received — upload complete, skip step 3.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "description": "Step 2. POST multipart/form-data to {{canvasUploadUrl}} (auto-set by step 1). Fill in every field from step 1's upload_params (logged in the Postman console), then the file field LAST — ordering matters. Do NOT send the Authorization header; upload_url is on Inst-FS, not the Canvas API host.\n\nOn 201: the response body IS the file object — done. On 3xx: the test script captures Location into {{canvasConfirmUrl}}, run step 3.",
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [] }
+              ]
+            },
+            "url": {
+              "raw": "{{canvasUploadUrl}}",
+              "host": ["{{canvasUploadUrl}}"]
+            }
+          }
+        },
+        {
+          "name": "Upload step 3: confirm",
+          "request": {
+            "description": "Only needed when step 2 returned a 3xx. POST empty (Content-Length: 0) to the captured {{canvasConfirmUrl}}. Bearer token IS required here — this request is back on the Canvas API host.",
+            "method": "POST",
+            "header": [
+              { "key": "Authorization",  "value": "Bearer {{canvasApiToken}}" },
+              { "key": "Content-Length", "value": "0" }
+            ],
+            "url": {
+              "raw": "{{canvasConfirmUrl}}",
+              "host": ["{{canvasConfirmUrl}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete a file",
+          "request": {
+            "description": "Used by supersedeFile after the replacement upload succeeds.",
+            "method": "DELETE",
             "header": [
               { "key": "Authorization", "value": "Bearer {{canvasApiToken}}" }
             ],

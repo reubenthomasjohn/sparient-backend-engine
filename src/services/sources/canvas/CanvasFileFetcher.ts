@@ -2,8 +2,15 @@ import axios from 'axios';
 import { Readable } from 'stream';
 import { Institution } from '@prisma/client';
 import { CanvasClient } from './CanvasClient';
+import { CanvasFileReplacer } from './CanvasFileReplacer';
 import { ISourceClient } from '../ISourceClient';
-import { DiscoveredCourse, DiscoveredFile } from '../../../types/source';
+import {
+  DiscoveredCourse,
+  DiscoveredFile,
+  ReplaceFileParams,
+  SupersedeFileParams,
+  UploadNewFileParams,
+} from '../../../types/source';
 import { CanvasCourse, CanvasFile, CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
 
@@ -54,6 +61,7 @@ function toDiscovered(f: CanvasFile): DiscoveredFile {
 
 export class CanvasFileFetcher implements ISourceClient {
   private readonly client: CanvasClient;
+  private readonly replacer: CanvasFileReplacer;
 
   constructor(institution: Institution) {
     const credentials = institution.credentials as {
@@ -62,6 +70,7 @@ export class CanvasFileFetcher implements ISourceClient {
       api_token: string;
     };
     this.client = new CanvasClient(credentials);
+    this.replacer = new CanvasFileReplacer(this.client);
   }
 
   async getCourses(): Promise<DiscoveredCourse[]> {
@@ -135,5 +144,17 @@ export class CanvasFileFetcher implements ISourceClient {
       timeout: 120_000,
     });
     return response.data;
+  }
+
+  replaceFile(params: ReplaceFileParams): Promise<DiscoveredFile> {
+    return this.replacer.replaceFile(params);
+  }
+
+  uploadNewFile(params: UploadNewFileParams): Promise<DiscoveredFile> {
+    return this.replacer.uploadNewFile(params);
+  }
+
+  supersedeFile(params: SupersedeFileParams): Promise<DiscoveredFile> {
+    return this.replacer.supersedeFile(params);
   }
 }

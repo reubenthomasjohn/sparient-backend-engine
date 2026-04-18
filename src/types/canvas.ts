@@ -14,6 +14,16 @@ export interface CanvasTerm {
   workflow_state: string;
 }
 
+export interface CanvasFolder {
+  id: number;
+  name: string;
+  full_name: string;
+  parent_folder_id: number | null;
+  // "Course" for course files, "User"/"Group" for others. The replacer only handles "Course".
+  context_type: string;
+  context_id: number;
+}
+
 export interface CanvasFile {
   id: number;
   uuid: string;

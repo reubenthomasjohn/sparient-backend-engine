@@ -38,6 +38,17 @@ class S3Service {
     logger.info('S3: source file uploaded', { key });
   }
 
+  // Reads a source-bucket object fully into memory. Used by the file replacer, which
+  // needs the bytes as a Blob to POST multipart to the source system. Safe because
+  // SUPPORTED_MIME_TYPES restricts source files to documents (typically <50 MB).
+  async getSourceFileBytes(key: string): Promise<Uint8Array> {
+    const r = await this.client.send(new GetObjectCommand({
+      Bucket: config.aws.s3SourceBucket,
+      Key: key,
+    }));
+    return r.Body!.transformToByteArray();
+  }
+
   // Small JSON write (request.json or response.json). Not streamed — payloads are KBs.
   async putJson(bucket: string, key: string, body: unknown): Promise<void> {
     await this.client.send(new PutObjectCommand({
