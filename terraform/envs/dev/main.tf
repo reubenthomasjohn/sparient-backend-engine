@@ -29,25 +29,15 @@ module "queues" {
   name_prefix = var.name_prefix
 }
 
-# --- Connectivo S3 buckets ---
-resource "aws_s3_bucket" "requests" {
-  bucket = "sparient-remediation-requests"
+# --- S3 bucket (single bucket, 4 prefixes) ---
+# Bucket already exists (created manually). Import into state if needed:
+#   terraform import aws_s3_bucket.main sparient-remediation-testing
+resource "aws_s3_bucket" "main" {
+  bucket = var.s3_bucket
 }
 
-resource "aws_s3_bucket" "responses" {
-  bucket = "sparient-remediation-responses"
-}
-
-resource "aws_s3_bucket_public_access_block" "requests" {
-  bucket                  = aws_s3_bucket.requests.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_public_access_block" "responses" {
-  bucket                  = aws_s3_bucket.responses.id
+resource "aws_s3_bucket_public_access_block" "main" {
+  bucket                  = aws_s3_bucket.main.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -80,7 +70,7 @@ data "aws_iam_policy_document" "allow_s3_to_sqs" {
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
-      values   = [aws_s3_bucket.responses.arn]
+      values   = [aws_s3_bucket.main.arn]
     }
   }
 }
@@ -91,10 +81,11 @@ resource "aws_sqs_queue_policy" "allow_s3" {
 }
 
 resource "aws_s3_bucket_notification" "responses" {
-  bucket = aws_s3_bucket.responses.id
+  bucket = aws_s3_bucket.main.id
   queue {
     queue_arn     = aws_sqs_queue.responses.arn
     events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "sparient-remediation-responses/"
     filter_suffix = ".json"
   }
   depends_on = [aws_sqs_queue_policy.allow_s3]
@@ -136,21 +127,11 @@ data "aws_iam_policy_document" "lambda_runtime" {
   # S3
   statement {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = [
-      "arn:aws:s3:::${var.s3_source_bucket}/*",
-      "arn:aws:s3:::${var.s3_remediated_bucket}/*",
-      "${aws_s3_bucket.requests.arn}/*",
-      "${aws_s3_bucket.responses.arn}/*",
-    ]
+    resources = ["${aws_s3_bucket.main.arn}/*"]
   }
   statement {
     actions   = ["s3:ListBucket"]
-    resources = [
-      "arn:aws:s3:::${var.s3_source_bucket}",
-      "arn:aws:s3:::${var.s3_remediated_bucket}",
-      aws_s3_bucket.requests.arn,
-      aws_s3_bucket.responses.arn,
-    ]
+    resources = [aws_s3_bucket.main.arn]
   }
 
   # Step Functions — discovery Lambda needs to start executions
@@ -171,12 +152,9 @@ locals {
     NODE_ENV                            = "production"
     AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     DATABASE_URL                        = neon_project.this.connection_uri
-    S3_SOURCE_BUCKET                    = var.s3_source_bucket
-    S3_REMEDIATED_BUCKET                = var.s3_remediated_bucket
+    S3_BUCKET                           = aws_s3_bucket.main.id
     SQS_DISCOVERY_URL                   = module.queues.discovery_queue_url
     QUEUE_START_CONSUMERS               = "false"
-    S3_REQUESTS_BUCKET                  = aws_s3_bucket.requests.id
-    S3_RESPONSES_BUCKET                 = aws_s3_bucket.responses.id
   }
 }
 
@@ -250,8 +228,9 @@ module "api" {
   })
 }
 
-# --- Step Functions: course workflow ---
-# discover-files → Map(upload-file, max 10) → batch-publish
+# --- Step Functions: institution workflow ---
+# One execution per institution. Nested Maps:
+#   discover-courses → Map(courses) → discover-files → Choice → Map(uploads) → batch-publish
 data "aws_iam_policy_document" "sfn_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -284,94 +263,168 @@ resource "aws_sfn_state_machine" "course_workflow" {
   role_arn = aws_iam_role.sfn.arn
 
   definition = jsonencode({
-    Comment = "Per-course workflow: discover files → upload in parallel → batch + publish"
-    StartAt = "DiscoverFiles"
+    Comment = "Per-institution workflow: discover courses → Map(per course: discover files → upload → batch)"
+    StartAt = "DiscoverCourses"
     States = {
-      DiscoverFiles = {
+
+      # Step 0: List courses from Canvas, upsert to DB, return course list.
+      DiscoverCourses = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           FunctionName = aws_lambda_function.course_workflow.arn
           Payload = {
-            "step"            = "discover-files"
+            "step"            = "discover-courses"
             "institutionId.$" = "$.institutionId"
-            "canvasCourseId.$" = "$.canvasCourseId"
             "force.$"         = "$.force"
+            "singleCourseId.$" = "$.singleCourseId"
           }
         }
-        ResultPath = "$.discovery"
         ResultSelector = {
-          "institutionId.$"   = "$.Payload.institutionId"
-          "canvasCourseId.$"  = "$.Payload.canvasCourseId"
-          "courseId.$"        = "$.Payload.courseId"
-          "isInitialSync.$"   = "$.Payload.isInitialSync"
-          "uploadJobs.$"      = "$.Payload.uploadJobs"
+          "institutionId.$" = "$.Payload.institutionId"
+          "force.$"         = "$.Payload.force"
+          "courses.$"       = "$.Payload.courses"
         }
-        Next = "UploadFiles"
+        ResultPath = "$.context"
+        Next       = "ProcessCourses"
       }
 
-      UploadFiles = {
-        Type          = "Map"
-        ItemsPath     = "$.discovery.uploadJobs"
-        MaxConcurrency = 10
-        ResultPath    = "$.uploadResults"
-        // Inject institutionId from parent context into each Map item
+      # Outer Map: one iteration per course, bounded concurrency.
+      ProcessCourses = {
+        Type           = "Map"
+        ItemsPath      = "$.context.courses"
+        MaxConcurrency = 3
+        ResultPath     = "$.courseResults"
         ItemSelector = {
-          "sourceFileId.$"  = "$$.Map.Item.Value.sourceFileId"
-          "modifiedAtMs.$"  = "$$.Map.Item.Value.modifiedAtMs"
-          "institutionId.$" = "$.discovery.institutionId"
+          "institutionId.$"  = "$.context.institutionId"
+          "force.$"          = "$.context.force"
+          "canvasCourseId.$" = "$$.Map.Item.Value.canvasCourseId"
+          "courseId.$"        = "$$.Map.Item.Value.courseId"
         }
         ItemProcessor = {
-          ProcessorConfig = {
-            Mode = "INLINE"
-          }
-          StartAt = "UploadOneFile"
+          ProcessorConfig = { Mode = "INLINE" }
+          StartAt = "DiscoverFiles"
           States = {
-            UploadOneFile = {
+
+            # Step 1: Discover files for this course.
+            DiscoverFiles = {
               Type     = "Task"
               Resource = "arn:aws:states:::lambda:invoke"
               Parameters = {
                 FunctionName = aws_lambda_function.course_workflow.arn
                 Payload = {
-                  "step"           = "upload-file"
-                  "sourceFileId.$" = "$.sourceFileId"
-                  "modifiedAtMs.$" = "$.modifiedAtMs"
-                  "institutionId.$" = "$.institutionId"
+                  "step"             = "discover-files"
+                  "institutionId.$"  = "$.institutionId"
+                  "canvasCourseId.$" = "$.canvasCourseId"
+                  "courseId.$"       = "$.courseId"
+                  "force.$"         = "$.force"
                 }
               }
+              ResultPath = "$.discovery"
               ResultSelector = {
-                "sourceFileId.$" = "$.Payload.sourceFileId"
-                "success.$"      = "$.Payload.success"
+                "hasWork.$"        = "$.Payload.hasWork"
+                "isInitialSync.$"  = "$.Payload.isInitialSync"
+                "fileIds.$"        = "$.Payload.fileIds"
               }
-              Retry = [{
-                ErrorEquals     = ["States.ALL"]
-                MaxAttempts     = 2
-                IntervalSeconds = 30
-                BackoffRate     = 2
+              Next = "CheckHasWork"
+            }
+
+            # Skip courses with no work (no uploads, no retries, no stuck batches).
+            CheckHasWork = {
+              Type = "Choice"
+              Choices = [{
+                Variable  = "$.discovery.hasWork"
+                BooleanEquals = true
+                Next      = "UploadFiles"
+              }]
+              Default = "SkipCourse"
+            }
+
+            SkipCourse = {
+              Type = "Pass"
+              End  = true
+            }
+
+            # Step 2: Upload changed files in parallel.
+            UploadFiles = {
+              Type           = "Map"
+              ItemsPath      = "$.discovery.fileIds"
+              MaxConcurrency = 3
+              ResultPath     = "$.uploadResults"
+              ItemSelector = {
+                "sourceFileId.$" = "$$.Map.Item.Value"
+              }
+              ItemProcessor = {
+                ProcessorConfig = { Mode = "INLINE" }
+                StartAt = "UploadOneFile"
+                States = {
+                  UploadOneFile = {
+                    Type     = "Task"
+                    Resource = "arn:aws:states:::lambda:invoke"
+                    Parameters = {
+                      FunctionName = aws_lambda_function.course_workflow.arn
+                      Payload = {
+                        "step"           = "upload-file"
+                        "sourceFileId.$" = "$.sourceFileId"
+                      }
+                    }
+                    ResultSelector = {
+                      "sourceFileId.$" = "$.Payload.sourceFileId"
+                      "success.$"      = "$.Payload.success"
+                    }
+                    Retry = [{
+                      ErrorEquals     = ["States.ALL"]
+                      MaxAttempts     = 2
+                      IntervalSeconds = 30
+                      BackoffRate     = 2
+                    }]
+                    Catch = [{
+                      ErrorEquals = ["States.ALL"]
+                      ResultPath  = "$.error"
+                      Next        = "UploadFailed"
+                    }]
+                    End = true
+                  }
+                  UploadFailed = {
+                    Type   = "Pass"
+                    Result = { success = false }
+                    End    = true
+                  }
+                }
+              }
+              Next = "BatchAndPublish"
+            }
+
+            # Step 3: Batch + publish (reads eligible files from DB).
+            BatchAndPublish = {
+              Type     = "Task"
+              Resource = "arn:aws:states:::lambda:invoke"
+              Parameters = {
+                FunctionName = aws_lambda_function.course_workflow.arn
+                Payload = {
+                  "step"             = "batch-publish"
+                  "institutionId.$"  = "$.institutionId"
+                  "canvasCourseId.$" = "$.canvasCourseId"
+                  "courseId.$"       = "$.courseId"
+                  "isInitialSync.$"  = "$.discovery.isInitialSync"
+                }
+              }
+              ResultPath = "$.batchResult"
+              Catch = [{
+                ErrorEquals = ["States.ALL"]
+                ResultPath  = "$.batchError"
+                Next        = "BatchFailed"
               }]
               End = true
             }
-          }
-        }
-        Next = "BatchAndPublish"
-      }
 
-      BatchAndPublish = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          FunctionName = aws_lambda_function.course_workflow.arn
-          Payload = {
-            "step"             = "batch-publish"
-            "institutionId.$"  = "$.discovery.institutionId"
-            "canvasCourseId.$" = "$.discovery.canvasCourseId"
-            "courseId.$"       = "$.discovery.courseId"
-            "isInitialSync.$"  = "$.discovery.isInitialSync"
-            "uploadResults.$"  = "$.uploadResults"
+            BatchFailed = {
+              Type = "Pass"
+              End  = true
+            }
           }
         }
-        ResultPath = "$.batchResult"
-        End        = true
+        End = true
       }
     }
   })

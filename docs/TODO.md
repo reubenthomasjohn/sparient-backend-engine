@@ -1,5 +1,27 @@
 # TODO
 
+## HIGH PRIORITY: Make S3 bucket name configurable per environment
+
+Currently hardcoded to `sparient-remediation-testing` (in `src/config/s3Prefixes.ts` comment and `terraform/envs/dev/terraform.tfvars`). For prod, this needs to be a per-environment variable. The 4 prefixes (`connectivo-incoming/`, `connectivo-remediated/`, `sparient-remediation-requests/`, `sparient-remediation-responses/`) are code constants in `src/config/s3Prefixes.ts`. The bucket name comes from `S3_BUCKET` env var.
+
+## Sync status API endpoint
+
+Add `GET /api/v1/sync/status/:institutionId` — daily monitoring endpoint that queries the DB for a summary of the institution's sync health. More useful than the Step Functions console for daily checks.
+
+```json
+{
+  "last_synced_at": "2026-04-21T02:00:12Z",
+  "courses_total": 3000,
+  "today": {
+    "batches_created": 8,
+    "files_uploaded": 42,
+    "files_failed": 1,
+    "batches_pending_response": 3,
+    "batches_completed": 5
+  }
+}
+```
+
 ## Prod: fetch DB password from SSM at cold-start
 
 Currently the full `DATABASE_URL` (including password) is baked into Lambda env vars by Terraform. Acceptable for dev (tfstate is encrypted, Lambda env is IAM-gated). For prod, the Lambda should only receive the SSM parameter *name* as an env var, fetch the password at cold-start, and assemble the connection string in-process. This keeps the password out of the Lambda configuration entirely.
@@ -40,6 +62,24 @@ Dev uses Neon (free, publicly reachable, no VPC needed). For prod, switch to RDS
 - Add Lambda SG + VPC subnet config back to all Lambda modules
 - Add NAT Gateway (Lambdas need internet access for Canvas API)
 - Estimated cost increase: ~$62/mo (RDS $15 + RDS Proxy $15 + NAT $32)
+
+## Stream S3 → Canvas on file replace (instead of buffering)
+
+`CanvasFileReplacer` today reads the full S3 object into memory via `s3Service.getSourceFileBytes` before POSTing to Canvas. Fine for the current MIME filter (PDFs/docx/pptx/xlsx, typically <20MB, one file per Lambda invocation), but worth switching when file sizes grow or we broaden the filter.
+
+**Why streaming is better:**
+- Buffering is sequential: download all bytes from S3, *then* upload to Canvas. Time ≈ `t_s3_download + t_canvas_upload`.
+- Streaming overlaps them: time ≈ `max(t_s3_download, t_canvas_upload)`. Savings ≈ the faster leg — roughly 20-30% per file in practice (S3 same-region is ~100MB/s, Canvas upload ~25MB/s external).
+- Memory at any instant drops from file-size to one chunk (~64KB). Removes any risk of a single huge file OOM'ing a 1024MB Lambda.
+
+**How to switch:**
+- Add the `form-data` npm package (native Node `FormData` + `Blob` forces buffering).
+- `S3Service.headSourceFile(key)` to get `ContentLength` (Canvas's step 1 needs `size` declared upfront, and Inst-FS requires a `Content-Length` header on step 2 — no chunked transfer).
+- `S3Service.getSourceFileStream(key)` returning the `GetObjectCommand` body as a `Readable`.
+- In `CanvasClient.finishUpload`, build the multipart with `form-data`: append each `upload_params` field, then `form.append('file', stream, { knownLength, filename, contentType })`. POST to `upload_url` with `form.getHeaders()` + the form as axios body.
+- Delete `S3Service.getSourceFileBytes` once nothing else uses it.
+
+**Why not now:** MIME filter keeps files small, each Lambda handles one file in isolation (so concurrency doesn't compound), and the per-file savings are a few hundred ms. Pick this up if (a) the MIME filter widens, (b) we see OOMs, or (c) total upload latency becomes a user-visible issue.
 
 ## On-demand file remediation
 

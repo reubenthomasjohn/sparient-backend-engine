@@ -1,6 +1,7 @@
 import { Batch, Course, Institution, SourceFile } from '@prisma/client';
 import prisma from '../../db/client';
 import { requestPublisher } from '../remediation/RequestPublisher';
+import { computeFailureUpdate } from '../../utils/failure';
 import { logger } from '../../utils/logger';
 
 export interface BuildOptions {
@@ -9,17 +10,12 @@ export interface BuildOptions {
 }
 
 export class BatchBuilder {
-  // Finds every source_file in the course that has a fresher S3 version than what's in-flight
-  // (or no in-flight version) and atomically claims it for a new batch. The claim is a
-  // conditional UPDATE — concurrent BatchBuilder calls cannot double-claim a row.
   async buildForCourse(
     institution: Institution,
     course: Course,
     options: BuildOptions = {},
   ): Promise<Batch | null> {
-    // Pull every potentially-eligible file for the course, then filter the cross-column
-    // condition in JS. Done this way (vs $queryRaw) because raw queries return snake_case
-    // column names, and the per-course row count is small enough that the JS filter is cheap.
+    // Pull potentially-eligible files, then filter the cross-column condition in JS.
     const candidates = await prisma.sourceFile.findMany({
       where: {
         courseId: course.id,
@@ -40,28 +36,32 @@ export class BatchBuilder {
 
     if (eligible.length === 0) return null;
 
-    // Atomic claim: advance batched_modified_at → s3_source_modified_at.
-    // Rows another worker already claimed at the current s3_source_modified_at (or higher)
-    // won't match and are silently excluded from this batch.
-    const claimed: SourceFile[] = [];
-    for (const file of eligible) {
-      const { count } = await prisma.sourceFile.updateMany({
-        where: {
-          id: file.id,
-          OR: [
-            { batchedModifiedAt: null },
-            { batchedModifiedAt: { lt: file.s3SourceModifiedAt! } },
-          ],
-        },
-        data: { batchedModifiedAt: file.s3SourceModifiedAt! },
-      });
-      if (count === 1) claimed.push(file);
-    }
+    // Single transaction: claim files + create batch + create batch_files.
+    // If any step fails or the process crashes, everything rolls back together.
+    // No orphaned claims possible.
+    const result = await prisma.$transaction(async (tx) => {
+      const claimed: SourceFile[] = [];
+      for (const file of eligible) {
+        const { count } = await tx.sourceFile.updateMany({
+          where: {
+            id: file.id,
+            OR: [
+              { batchedModifiedAt: null },
+              { batchedModifiedAt: { lt: file.s3SourceModifiedAt! } },
+            ],
+          },
+          data: {
+            batchedModifiedAt: file.s3SourceModifiedAt!,
+            lastOutcome: null,
+            lastFailureReason: null,
+          },
+        });
+        if (count === 1) claimed.push(file);
+      }
 
-    if (claimed.length === 0) return null;
+      if (claimed.length === 0) return null;
 
-    const batch = await prisma.$transaction(async (tx) => {
-      const b = await tx.batch.create({
+      const batch = await tx.batch.create({
         data: {
           institutionId: institution.id,
           courseId: course.id,
@@ -74,7 +74,7 @@ export class BatchBuilder {
 
       await tx.batchFile.createMany({
         data: claimed.map((f) => ({
-          batchId: b.id,
+          batchId: batch.id,
           sourceFileId: f.id,
           canvasFileId: f.canvasFileId,
           s3SourceKey: f.s3SourceKey!,
@@ -82,8 +82,12 @@ export class BatchBuilder {
         })),
       });
 
-      return b;
+      return { batch, claimed };
     });
+
+    if (!result) return null;
+
+    const { batch, claimed } = result;
 
     logger.info('BatchBuilder: batch created', {
       batchId: batch.id,
@@ -92,19 +96,20 @@ export class BatchBuilder {
       ...options,
     });
 
-    // Hand off to Connectivo by writing the per-batch request.json. If this fails,
-    // roll back the claim so the files become eligible again on the next sync pass.
+    // Publish request.json to S3. If this fails, roll back the claim AND record
+    // the failure properly (incrementing retryCount via computeFailureUpdate).
     try {
       await requestPublisher.publish(batch, institution, course);
     } catch (err) {
-      logger.error('BatchBuilder: request publish failed, rolling back claim', {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.error('BatchBuilder: request publish failed, rolling back', {
         batchId: batch.id,
-        error: err,
+        error: reason,
       });
-      await prisma.sourceFile.updateMany({
-        where: { id: { in: claimed.map((f) => f.id) } },
-        data: { batchedModifiedAt: null },
-      });
+      for (const file of claimed) {
+        const fu = computeFailureUpdate(file, `Request publish failed: ${reason}`);
+        await prisma.sourceFile.update({ where: { id: file.id }, data: { ...fu, batchedModifiedAt: null } });
+      }
       await prisma.batch.update({
         where: { id: batch.id },
         data: { status: 'failed' },

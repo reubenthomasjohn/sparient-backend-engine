@@ -1,10 +1,8 @@
 import type { SQSEvent, SQSBatchResponse, SQSBatchItemFailure } from 'aws-lambda';
 import { handleResponseJob } from './handler';
+import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 
-// SQS receives S3 event notifications when Connectivo writes a response.json into
-// the responses bucket. Each SQS message has an "s3" envelope; we extract bucket+key
-// and hand off to the handler.
 interface S3EventRecord {
   s3: { bucket: { name: string }; object: { key: string } };
 }
@@ -18,13 +16,15 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   for (const record of event.Records) {
     try {
       const s3Event = JSON.parse(record.body) as S3Event;
-      // S3 → SQS notifications batch up to N records per message; process all of them.
       for (const r of s3Event.Records) {
-        await handleResponseJob({
-          bucket: r.s3.bucket.name,
-          // S3 URL-encodes object keys in event payloads. decodeURIComponent restores spaces etc.
-          key: decodeURIComponent(r.s3.object.key.replace(/\+/g, ' ')),
-        });
+        const fullKey = decodeURIComponent(r.s3.object.key.replace(/\+/g, ' '));
+        // Strip the responses prefix from the key — handler works with prefix-relative keys.
+        const prefixWithSlash = `${S3_PREFIX.RESPONSES}/`;
+        const key = fullKey.startsWith(prefixWithSlash)
+          ? fullKey.slice(prefixWithSlash.length)
+          : fullKey;
+
+        await handleResponseJob({ prefix: S3_PREFIX.RESPONSES, key });
       }
     } catch (err) {
       logger.error('Responses Lambda: record failed', {

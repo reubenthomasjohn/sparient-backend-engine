@@ -1,9 +1,9 @@
 region      = "us-east-2"
 name_prefix = "sparient-dev"
 
-# Existing buckets
-s3_source_bucket     = "your-source-bucket-name"
-s3_remediated_bucket = "your-remediated-bucket-name"
+# Single S3 bucket (4 prefixes inside). Must exist before first apply.
+# Import: terraform import aws_s3_bucket.main sparient-remediation-testing
+s3_bucket = "sparient-remediation-testing"
 
 # CI/CD
 github_repo_name = "sparient-backend-engine"

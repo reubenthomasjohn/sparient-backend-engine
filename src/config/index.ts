@@ -19,11 +19,8 @@ const configSchema = z.object({
     accessKeyId: z.string().optional(),
     secretAccessKey: z.string().optional(),
     region: z.string().default('us-east-1'),
-    s3SourceBucket: z.string().min(1, 'S3_SOURCE_BUCKET is required'),
-    s3RemediatedBucket: z.string().min(1, 'S3_REMEDIATED_BUCKET is required'),
-    s3RequestsBucket: z.string().min(1, 'S3_REQUESTS_BUCKET is required'),
-    s3ResponsesBucket: z.string().min(1, 'S3_RESPONSES_BUCKET is required'),
-    courseWorkflowArn: z.string().optional(), // SFN state machine ARN — set in prod, unset in local dev
+    s3Bucket: z.string().min(1, 'S3_BUCKET is required'),
+    courseWorkflowArn: z.string().optional(),
   }),
   jobs: z.object({
     retryBaseDelayMinutes: z.coerce.number().default(30),
@@ -49,10 +46,7 @@ const parsed = configSchema.safeParse({
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
     region: process.env.AWS_REGION,
-    s3SourceBucket: process.env.S3_SOURCE_BUCKET,
-    s3RemediatedBucket: process.env.S3_REMEDIATED_BUCKET,
-    s3RequestsBucket: process.env.S3_REQUESTS_BUCKET,
-    s3ResponsesBucket: process.env.S3_RESPONSES_BUCKET,
+    s3Bucket: process.env.S3_BUCKET,
     courseWorkflowArn: process.env.COURSE_WORKFLOW_ARN,
   },
   jobs: {

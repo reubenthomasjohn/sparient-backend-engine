@@ -1,23 +1,20 @@
-import { Institution } from '@prisma/client';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 import prisma from '../../db/client';
-import { DiscoveryJob, discoveryQueue } from '../../queue';
-import { SourceRegistry } from '../../services/sources/SourceRegistry';
-import { ISourceClient } from '../../services/sources/ISourceClient';
+import { DiscoveryJob } from '../../queue';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
 
 const sfn = new SFNClient({ region: config.aws.region });
 
 // ---------------------------------------------------------------------------
-// Entry point — routes by message type.
+// Entry point
 // ---------------------------------------------------------------------------
 
 export async function handleDiscoveryJob(job: DiscoveryJob): Promise<void> {
   if (job.type === 'tick') {
     return runTick();
   }
-  return discoverInstitution(job.institutionId, job.force);
+  return startInstitutionWorkflow(job.institutionId, job.force);
 }
 
 // ---------------------------------------------------------------------------
@@ -48,76 +45,39 @@ async function runTick(): Promise<void> {
   }
 
   for (const inst of due) {
-    await discoveryQueue.send({ type: 'discover', institutionId: inst.id });
+    await startInstitutionWorkflow(inst.id);
   }
 
   logger.info('Tick: institutions enqueued', { count: due.length });
 }
 
 // ---------------------------------------------------------------------------
-// Institution discover — list courses, start one Step Functions execution per course.
+// Start one SFN execution per institution. The SFN handles everything:
+// discover-courses → Map(courses) → discover-files → Map(uploads) → batch
 // ---------------------------------------------------------------------------
 
-async function discoverInstitution(institutionId: string, force?: boolean): Promise<void> {
-  const institution = await prisma.institution.findUniqueOrThrow({
-    where: { id: institutionId },
-  });
-  const sourceClient = SourceRegistry.getClient(institution);
+async function startInstitutionWorkflow(institutionId: string, force?: boolean): Promise<void> {
+  await prisma.institution.findUniqueOrThrow({ where: { id: institutionId } });
 
-  const discoveredCourses = await upsertCoursesFromCanvas(institution, sourceClient);
-
-  // Start one SFN execution per active course. Each execution runs:
-  //   discover-files → Map(upload-file) → batch-publish
-  for (const c of discoveredCourses) {
-    await sfn.send(new StartExecutionCommand({
-      stateMachineArn: config.aws.courseWorkflowArn,
-      name: `${institutionId}-${c.externalId}-${Date.now()}`,
-      input: JSON.stringify({
-        institutionId,
-        canvasCourseId: c.externalId,
-        force: force ?? false,
-      }),
-    }));
+  if (!config.aws.courseWorkflowArn) {
+    logger.warn('Discovery: COURSE_WORKFLOW_ARN not set, skipping SFN start');
+    return;
   }
 
+  await sfn.send(new StartExecutionCommand({
+    stateMachineArn: config.aws.courseWorkflowArn,
+    name: `${institutionId}-${Date.now()}`,
+    input: JSON.stringify({
+      institutionId,
+      force: force ?? false,
+      singleCourseId: null, // null = all courses. SFN requires this key to exist.
+    }),
+  }));
+
   await prisma.institution.update({
-    where: { id: institution.id },
+    where: { id: institutionId },
     data: { lastSyncedAt: new Date() },
   });
 
-  logger.info('Discovery: SFN executions started', {
-    institutionId,
-    courses: discoveredCourses.length,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Shared
-// ---------------------------------------------------------------------------
-
-async function upsertCoursesFromCanvas(institution: Institution, sourceClient: ISourceClient) {
-  const discovered = await sourceClient.getCourses();
-  for (const dc of discovered) {
-    await prisma.course.upsert({
-      where: {
-        institutionId_canvasCourseId: {
-          institutionId: institution.id,
-          canvasCourseId: dc.externalId,
-        },
-      },
-      create: {
-        institutionId: institution.id,
-        canvasCourseId: dc.externalId,
-        canvasTermId: dc.termId,
-        name: dc.name,
-        courseCode: dc.courseCode,
-      },
-      update: {
-        name: dc.name,
-        courseCode: dc.courseCode,
-        canvasTermId: dc.termId,
-      },
-    });
-  }
-  return discovered;
+  logger.info('Discovery: SFN execution started', { institutionId, force });
 }

@@ -102,7 +102,7 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
       },
       data: {
         s3SourceKey: s3Key,
-        s3SourceBucket: config.aws.s3SourceBucket,
+        s3SourceBucket: config.aws.s3Bucket,
         s3SourceModifiedAt: fresh.modifiedAt,
       },
     });

@@ -26,13 +26,11 @@ variable "neon_api_key" {
   sensitive = true
 }
 
-# S3 buckets that already exist (see .env).
-variable "s3_source_bucket" {
-  type = string
-}
-
-variable "s3_remediated_bucket" {
-  type = string
+# Single S3 bucket with 4 prefixes (connectivo-incoming/, connectivo-remediated/,
+# sparient-remediation-requests/, sparient-remediation-responses/).
+variable "s3_bucket" {
+  type    = string
+  default = "sparient-remediation-testing"
 }
 
 # Concurrency caps on the SQS event source mappings.

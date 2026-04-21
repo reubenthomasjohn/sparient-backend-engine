@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { handleResponseJob } from '../../workers/responses/handler';
-import { config } from '../../config';
+import { S3_PREFIX } from '../../config/s3Prefixes';
 
 const router = Router();
 
@@ -14,8 +14,8 @@ router.post(
     try {
       const { institutionId, courseId, batchId } = req.params;
       const key = `${institutionId}/${courseId}/${batchId}.json`;
-      await handleResponseJob({ bucket: config.aws.s3ResponsesBucket, key });
-      res.json({ success: true, processed: { bucket: config.aws.s3ResponsesBucket, key } });
+      await handleResponseJob({ prefix: S3_PREFIX.RESPONSES, key });
+      res.json({ success: true, processed: { prefix: S3_PREFIX.RESPONSES, key } });
     } catch (err) {
       next(err);
     }

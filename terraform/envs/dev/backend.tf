@@ -11,7 +11,7 @@ terraform {
     bucket         = "sparient-backend-engine-tfstate-dev"
     key            = "dev/terraform.tfstate"
     region         = "us-east-2"
-    use_lockfile   = true
+    dynamodb_table = "sparient-tf-locks"
     encrypt        = true
     # profile is set via -backend-config="profile=sparient" for local runs.
     # CI uses OIDC — no profile needed.

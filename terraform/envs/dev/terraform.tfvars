@@ -1,9 +1,8 @@
 region      = "us-east-2"
 name_prefix = "sparient-dev"
 
-# Existing buckets from .env
-s3_source_bucket     = "connectivo-incoming"
-s3_remediated_bucket = "connectivo-remediated"
+# Single S3 bucket (4 prefixes inside)
+s3_bucket = "sparient-remediation-testing"
 
 # Concurrency caps
 discovery_max_concurrency   = 5

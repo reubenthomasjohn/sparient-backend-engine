@@ -5,11 +5,9 @@ import { logger } from '../../utils/logger';
 
 const remediationService = new RemediationService();
 
-// One S3 event record per response.json that landed in the responses bucket.
-// Path convention: <institutionId>/<courseId>/<batchId>.json
 export interface ResponseJob {
-  bucket: string;
-  key: string;
+  prefix: string;
+  key: string;    // key WITHOUT the prefix (e.g. <instId>/<courseId>/<batchId>.json)
 }
 
 export async function handleResponseJob(job: ResponseJob): Promise<void> {
@@ -19,11 +17,9 @@ export async function handleResponseJob(job: ResponseJob): Promise<void> {
     return;
   }
 
-  logger.info('Responses: fetching response.json', { bucket: job.bucket, key: job.key, batchId });
-  const raw = await s3Service.getJson<unknown>(job.bucket, job.key);
+  logger.info('Responses: fetching response.json', { prefix: job.prefix, key: job.key, batchId });
+  const raw = await s3Service.getJson<unknown>(job.prefix, job.key);
 
-  // Validate before processing — a malformed response gets a clear error in the logs
-  // rather than a cryptic crash halfway through RemediationService.
   const result = connectivoResultsSchema.safeParse(raw);
   if (!result.success) {
     logger.error('Responses: invalid response.json', {
@@ -37,7 +33,6 @@ export async function handleResponseJob(job: ResponseJob): Promise<void> {
   await remediationService.handleResults(batchId, result.data);
 }
 
-// Path is <institutionId>/<courseId>/<batchId>.json — just take the last segment.
 function parseBatchIdFromKey(key: string): string | null {
   const last = key.split('/').pop();
   if (!last || !last.endsWith('.json')) return null;

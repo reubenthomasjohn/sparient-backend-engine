@@ -73,7 +73,7 @@ export class RemediationService {
             connectivoState,
             qualityLabel,
             remediatedS3Key,
-            remediatedS3Bucket: remediatedS3Key ? config.aws.s3RemediatedBucket : null,
+            remediatedS3Bucket: remediatedS3Key ? config.aws.s3Bucket : null,
             totalPages: result.total_pages,
             processingTimeSecs: result.processing_time_seconds,
             verapdfErrors: result.verapdf_errors,
@@ -94,14 +94,17 @@ export class RemediationService {
           });
         }
 
+        // Guard: only write the outcome if the file hasn't been claimed by a newer batch.
+        // If batchedModifiedAt has advanced past this batch's version, a newer cycle owns the
+        // file — skip the source_file update so we don't overwrite in-flight state.
         if (connectivoState === 'completed') {
-          await tx.sourceFile.update({
-            where: { id: batchFile.sourceFileId },
+          await tx.sourceFile.updateMany({
+            where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
             data: { lastOutcome: 'completed', lastFailureReason: null },
           });
         } else if (connectivoState === 'completed_with_warnings') {
-          await tx.sourceFile.update({
-            where: { id: batchFile.sourceFileId },
+          await tx.sourceFile.updateMany({
+            where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
             data: { lastOutcome: 'completed_with_warnings', lastFailureReason: null },
           });
         } else {
@@ -109,7 +112,10 @@ export class RemediationService {
             batchFile.sourceFile,
             result.error ?? 'Connectivo reported failure',
           );
-          await tx.sourceFile.update({ where: { id: batchFile.sourceFileId }, data: fu });
+          await tx.sourceFile.updateMany({
+            where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
+            data: fu,
+          });
         }
       }
 

@@ -40,7 +40,7 @@ See `docs/ARCHITECTURE.md` for the full deployment diagram, fan-out details, and
 
 - [Node.js](https://nodejs.org/) v20+
 - [Docker](https://www.docker.com/) (for local PostgreSQL, or use Neon)
-- AWS account with S3 buckets (source, remediated, requests, responses)
+- AWS account with an S3 bucket (single bucket, 4 prefixes)
 - Canvas API token, domain, and account ID
 
 ---
@@ -71,10 +71,7 @@ DATABASE_URL=postgresql://sparient:sparient@localhost:5432/sparient
 AWS_ACCESS_KEY_ID=your-access-key
 AWS_SECRET_ACCESS_KEY=your-secret-key
 AWS_REGION=us-east-2
-S3_SOURCE_BUCKET=your-source-bucket
-S3_REMEDIATED_BUCKET=your-remediated-bucket
-S3_REQUESTS_BUCKET=sparient-remediation-requests
-S3_RESPONSES_BUCKET=sparient-remediation-responses
+S3_BUCKET=sparient-remediation-testing
 
 # Canvas
 CANVAS_DOMAIN=your-institution.instructure.com   # no https://

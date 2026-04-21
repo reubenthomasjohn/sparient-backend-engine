@@ -1,6 +1,6 @@
-// Shape of the request.json we write to the requests bucket per batch.
+// Shape of the request.json we write to the requests prefix per batch.
 // Connectivo polls the bucket and processes any new file at:
-//   s3://sparient-remediation-requests/<institutionId>/<courseId>/<batchId>.json
+//   s3://<S3_BUCKET>/sparient-remediation-requests/<institutionId>/<courseId>/<batchId>.json
 export interface ConnectivoBatchPayload {
   batch_id: string;
   created_at: string;
@@ -8,10 +8,10 @@ export interface ConnectivoBatchPayload {
   institution_id: string;
   course_id: string;
   s3_source_bucket: string;
-  // Where Connectivo should put the actual remediated PDFs.
+  s3_source_prefix: string;
   s3_remediated_bucket: string;
-  // Where Connectivo should write the response.json. Convention: same path as the
-  // request, just in the responses bucket.
+  s3_remediated_prefix: string;
+  // Full S3 key (including prefix) where Connectivo writes the response.json.
   response_s3_bucket: string;
   response_s3_key: string;
   files: ConnectivoFilePayload[];
