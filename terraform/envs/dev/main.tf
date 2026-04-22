@@ -407,6 +407,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
                   "canvasCourseId.$" = "$.canvasCourseId"
                   "courseId.$"       = "$.courseId"
                   "isInitialSync.$"  = "$.discovery.isInitialSync"
+                  "force.$"          = "$.force"
                 }
               }
               ResultPath = "$.batchResult"

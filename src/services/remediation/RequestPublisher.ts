@@ -1,4 +1,4 @@
-import { Batch, Course, Institution } from '@prisma/client';
+import { Batch, BatchFile, Course, Institution, SourceFile } from '@prisma/client';
 import prisma from '../../db/client';
 import { config } from '../../config';
 import { S3_PREFIX } from '../../config/s3Prefixes';
@@ -6,40 +6,57 @@ import { s3Service } from '../storage/S3Service';
 import { ConnectivoBatchPayload } from '../../types/connectivo';
 import { logger } from '../../utils/logger';
 
+type BatchFileWithSource = BatchFile & { sourceFile: SourceFile };
+
+// Transforms our internal data model into the Connectivo-facing request.json contract.
+// Keeps the two decoupled — internal schema can evolve independently of what Connectivo expects.
+function toConnectivoPayload(
+  batch: Batch,
+  institution: Institution,
+  course: Course,
+  batchFiles: BatchFileWithSource[],
+  forceReprocess: boolean,
+): ConnectivoBatchPayload {
+  const folderPath = `${config.aws.s3Bucket}/${S3_PREFIX.SOURCE}/${institution.id}/${course.canvasCourseId}/`;
+
+  return {
+    batch_id: batch.id,
+    // TODO: currently batch.createdAt (DB row creation time). Consider using the actual
+    // S3 publish timestamp or the latest file modified_at in the batch.
+    submitted_at: batch.createdAt.toISOString(),
+    force_reprocess: forceReprocess,
+    folders: [
+      {
+        path: folderPath,
+        files: batchFiles.map((bf) => ({
+          // Path fragment relative to folderPath: <canvasFileId>/v-<ms>/<fileName>
+          name: `${bf.canvasFileId}/v-${bf.sourceModifiedAt.getTime()}/${bf.sourceFile.fileName}`,
+          file_id: bf.sourceFileId,
+          canvas_file_id: bf.canvasFileId,
+        })),
+      },
+    ],
+  };
+}
+
 export class RequestPublisher {
   buildKey(institutionId: string, canvasCourseId: string, batchId: string): string {
     return `${institutionId}/${canvasCourseId}/${batchId}.json`;
   }
 
-  async publish(batch: Batch, institution: Institution, course: Course): Promise<void> {
+  async publish(
+    batch: Batch,
+    institution: Institution,
+    course: Course,
+    forceReprocess = false,
+  ): Promise<void> {
     const batchFiles = await prisma.batchFile.findMany({
       where: { batchId: batch.id },
       include: { sourceFile: true },
     });
 
     const key = this.buildKey(institution.id, course.canvasCourseId, batch.id);
-
-    const payload: ConnectivoBatchPayload = {
-      batch_id: batch.id,
-      created_at: batch.createdAt.toISOString(),
-      source_system: institution.sourceType,
-      institution_id: institution.id,
-      course_id: course.canvasCourseId,
-      s3_source_bucket: config.aws.s3Bucket,
-      s3_source_prefix: S3_PREFIX.SOURCE,
-      s3_remediated_bucket: config.aws.s3Bucket,
-      s3_remediated_prefix: S3_PREFIX.REMEDIATED,
-      response_s3_bucket: config.aws.s3Bucket,
-      response_s3_key: `${S3_PREFIX.RESPONSES}/${key}`,
-      files: batchFiles.map((bf) => ({
-        file_id: bf.sourceFileId,
-        canvas_file_id: bf.canvasFileId,
-        file_name: bf.sourceFile.fileName,
-        mime_type: bf.sourceFile.mimeType,
-        size_bytes: bf.sourceFile.sizeBytes ? Number(bf.sourceFile.sizeBytes) : null,
-        s3_key: `${S3_PREFIX.SOURCE}/${bf.s3SourceKey}`,
-      })),
-    };
+    const payload = toConnectivoPayload(batch, institution, course, batchFiles, forceReprocess);
 
     await s3Service.putJson(S3_PREFIX.REQUESTS, key, payload);
 
@@ -55,7 +72,8 @@ export class RequestPublisher {
     logger.info('RequestPublisher: published', {
       batchId: batch.id,
       key,
-      fileCount: payload.files.length,
+      fileCount: batchFiles.length,
+      forceReprocess,
     });
   }
 }

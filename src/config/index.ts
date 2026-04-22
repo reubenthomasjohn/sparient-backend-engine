@@ -1,16 +1,18 @@
-import dotenv from 'dotenv';
-import { z } from 'zod';
+import dotenv from "dotenv";
+import { z } from "zod";
 
 dotenv.config();
 
 const configSchema = z.object({
   app: z.object({
     port: z.coerce.number().default(3000),
-    nodeEnv: z.enum(['development', 'production', 'test']).default('development'),
-    logLevel: z.string().default('info'),
+    nodeEnv: z
+      .enum(["development", "production", "test"])
+      .default("development"),
+    logLevel: z.string().default("info"),
   }),
   db: z.object({
-    url: z.string().min(1, 'DATABASE_URL is required'),
+    url: z.string().min(1, "DATABASE_URL is required"),
   }),
   aws: z.object({
     // Optional — the SDK uses the default credential chain (Lambda role, env vars, ~/.aws).
@@ -18,8 +20,8 @@ const configSchema = z.object({
     // specific IAM user). Most setups leave these unset.
     accessKeyId: z.string().optional(),
     secretAccessKey: z.string().optional(),
-    region: z.string().default('us-east-1'),
-    s3Bucket: z.string().min(1, 'S3_BUCKET is required'),
+    region: z.string().default("us-east-1"),
+    s3Bucket: z.string().min(1, "S3_BUCKET is required"),
     courseWorkflowArn: z.string().optional(),
   }),
   jobs: z.object({
@@ -59,9 +61,9 @@ const parsed = configSchema.safeParse({
 });
 
 if (!parsed.success) {
-  console.error('Invalid environment configuration:');
+  console.error("Invalid environment configuration:");
   parsed.error.issues.forEach((issue) => {
-    console.error(`  ${issue.path.join('.')}: ${issue.message}`);
+    console.error(`  ${issue.path.join(".")}: ${issue.message}`);
   });
   process.exit(1);
 }

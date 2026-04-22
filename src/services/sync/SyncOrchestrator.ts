@@ -34,13 +34,13 @@ export class SyncOrchestrator {
         force,
       });
       if (result.hasWork) {
-        // Uploads run via in-memory queue in local dev — batch on next manual sync
         await batchPublish({
           step: 'batch-publish',
           institutionId,
           canvasCourseId,
           courseId: result.courseId,
           isInitialSync: result.isInitialSync,
+          force,
         });
       }
       return;

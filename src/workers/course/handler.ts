@@ -223,6 +223,7 @@ export interface BatchPublishInput {
   canvasCourseId: string;
   courseId: string;
   isInitialSync: boolean;
+  force?: boolean;
 }
 
 export interface BatchPublishOutput {
@@ -239,11 +240,15 @@ export async function batchPublish(input: BatchPublishInput): Promise<BatchPubli
   });
 
   // Retry failed files + release stuck batches before batching.
-  await retryCourseFiles(input.courseId);
+  const hadRetries = await retryCourseFiles(input.courseId);
   await releaseStuckBatches(input.courseId);
 
+  // force_reprocess = true if: explicit force sync, OR retried files are in this batch.
+  // Connectivo checks file hashes and skips unchanged files — retries need this flag
+  // so Connectivo actually reprocesses them.
   const batch = await batchBuilder.buildForCourse(institution, course, {
     isInitialSync: input.isInitialSync,
+    forceReprocess: input.force || hadRetries,
   });
 
   await prisma.course.update({
@@ -267,7 +272,7 @@ export async function batchPublish(input: BatchPublishInput): Promise<BatchPubli
 // Per-course retry + cleanup
 // ---------------------------------------------------------------------------
 
-async function retryCourseFiles(courseId: string): Promise<void> {
+async function retryCourseFiles(courseId: string): Promise<boolean> {
   const now = new Date();
   const eligible = await prisma.sourceFile.findMany({
     where: {
@@ -280,7 +285,7 @@ async function retryCourseFiles(courseId: string): Promise<void> {
 
   // Prisma can't express retryCount < maxRetries cross-column, so filter in JS.
   const retriable = eligible.filter((f) => f.retryCount < f.maxRetries);
-  if (retriable.length === 0) return;
+  if (retriable.length === 0) return false;
 
   await prisma.sourceFile.updateMany({
     where: { id: { in: retriable.map((f) => f.id) } },
@@ -293,6 +298,7 @@ async function retryCourseFiles(courseId: string): Promise<void> {
   });
 
   logger.info('BatchPublish: retried files', { courseId, count: retriable.length });
+  return true;
 }
 
 async function releaseStuckBatches(courseId: string): Promise<void> {

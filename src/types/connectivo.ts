@@ -3,27 +3,24 @@
 //   s3://<S3_BUCKET>/sparient-remediation-requests/<institutionId>/<courseId>/<batchId>.json
 export interface ConnectivoBatchPayload {
   batch_id: string;
-  created_at: string;
-  source_system: string;
-  institution_id: string;
-  course_id: string;
-  s3_source_bucket: string;
-  s3_source_prefix: string;
-  s3_remediated_bucket: string;
-  s3_remediated_prefix: string;
-  // Full S3 key (including prefix) where Connectivo writes the response.json.
-  response_s3_bucket: string;
-  response_s3_key: string;
+  // TODO: currently set to batch.createdAt (DB row creation time). Consider using
+  // the actual S3 publish timestamp or the latest file modified_at in the batch.
+  submitted_at: string;
+  force_reprocess: boolean;
+  folders: ConnectivoFolderPayload[];
+}
+
+export interface ConnectivoFolderPayload {
+  // Full S3 path: <bucket>/<source-prefix>/<institutionId>/<courseId>/
+  path: string;
   files: ConnectivoFilePayload[];
 }
 
 export interface ConnectivoFilePayload {
-  file_id: string;       // our source_file.id (UUID) — stable internal reference
+  // Path fragment relative to folder.path: <canvasFileId>/v-<modifiedAtMs>/<fileName>
+  name: string;
+  file_id: string;       // our source_file.id (UUID)
   canvas_file_id: string;
-  file_name: string;
-  mime_type: string;
-  size_bytes: number | null;
-  s3_key: string;
 }
 
 // ---------------------------------------------------------------------------

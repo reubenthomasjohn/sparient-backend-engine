@@ -7,6 +7,7 @@ import { logger } from '../../utils/logger';
 export interface BuildOptions {
   isInitialSync?: boolean;
   isRetry?: boolean;
+  forceReprocess?: boolean;
 }
 
 export class BatchBuilder {
@@ -99,7 +100,7 @@ export class BatchBuilder {
     // Publish request.json to S3. If this fails, roll back the claim AND record
     // the failure properly (incrementing retryCount via computeFailureUpdate).
     try {
-      await requestPublisher.publish(batch, institution, course);
+      await requestPublisher.publish(batch, institution, course, options.forceReprocess ?? options.isRetry ?? false);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.error('BatchBuilder: request publish failed, rolling back', {
