@@ -77,7 +77,6 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
 
   // Content-addressed: modifiedAt is in the key, so in-flight S3 objects are never clobbered.
   const s3Key = s3Service.buildSourceKey({
-    institutionId: row.course.institution.id,
     canvasCourseId: row.course.canvasCourseId,
     canvasFileId: row.canvasFileId,
     modifiedAt: fresh.modifiedAt,

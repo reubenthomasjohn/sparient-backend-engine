@@ -6,7 +6,6 @@ import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 
 export interface SourceKeyParams {
-  institutionId: string;
   canvasCourseId: string;
   canvasFileId: string;
   modifiedAt: Date;
@@ -77,7 +76,7 @@ class S3Service {
 
   buildSourceKey(params: SourceKeyParams): string {
     const version = params.modifiedAt.getTime();
-    return `${params.institutionId}/${params.canvasCourseId}/${params.canvasFileId}/v-${version}/${params.fileName}`;
+    return `${params.canvasCourseId}/${params.canvasFileId}/v-${version}/${params.fileName}`;
   }
 }
 
