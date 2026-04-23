@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   // Slug is used in S3 paths — set INSTITUTION_SLUG explicitly.
   // Falls back to the first component of the Canvas domain if not provided.
   // Must be lowercase, alphanumeric + hyphens only, and unique across institutions.
-  const rawSlug = process.env.INSTITUTION_SLUG || canvasDomain.split('.')[0];
+  const rawSlug = process.env.INSTITUTION_SLUG ?? canvasDomain.split('.')[0];
   const slug = rawSlug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
   const institution = await prisma.institution.upsert({
