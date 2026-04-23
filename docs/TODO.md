@@ -1,5 +1,9 @@
 # TODO
 
+## Clean up hardcoded S3 bucket in seed script
+
+`prisma/seed.ts` hardcodes `accesshub-remediation-storage` as the institution's S3 bucket and manually configures the S3 event notification. This was a quick-start shortcut. Once the institution registration endpoint exists, remove the hardcoded bucket from the seed and use `provisionInstitutionBucket` (which creates the bucket + configures notifications dynamically).
+
 ## Institution registration API endpoint
 
 Add `POST /api/v1/institutions` — creates an institution record + provisions its S3 bucket. Currently institutions are only created via `npm run db:seed`.
