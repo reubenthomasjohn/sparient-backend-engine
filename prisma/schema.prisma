@@ -126,6 +126,8 @@ model SourceFile {
   writebackState          WritebackState? @map("writeback_state")
   lastWritebackModifiedAt DateTime?       @map("last_writeback_modified_at")
 
+  reviewAcknowledged Boolean @default(false) @map("review_acknowledged")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

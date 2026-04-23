@@ -1,0 +1,462 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Sparient Backend Engine",
+    "description": "Institutional course file sync, remediation, and **Access Hub** read APIs. See `spec/TECHNICAL_SPECIFICATION.md` for full field-level rules. Unlisted routes (`/api/v1/institutions`, `/api/v1/sync`, `/api/v1/batches`, `/api/v1/admin`) are internal/ops — add them to this document as you expose them.\n\n**Auth:** All `/api/v1/access-hub/**` routes require **HTTP Basic** *or* **HMAC-SHA256** signed requests (`X-Signature` + `X-Timestamp`; optional `X-Nonce`). If `X-Signature` is present, Basic is not used as a fallback on failure.\n\n**Health** is unauthenticated.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "/", "description": "This host" }
+  ],
+  "tags": [
+    { "name": "Health" },
+    { "name": "Access Hub" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Liveness / health check",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "status": { "type": "string", "example": "ok" } } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/access-hub/ping": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Auth + JSON envelope probe",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/scope": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Institution scope probe (TASK-02)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/InstitutionId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/dashboard": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Admin institution dashboard (§4.5)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          {
+            "name": "canvas_term_id",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Filter courses by Canvas term id (exact match)"
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/settings": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Account remediation settings (GET) (§4.8)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/InstitutionId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "patch": {
+        "tags": ["Access Hub"],
+        "summary": "Account remediation settings (PATCH) (§4.8)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/InstitutionId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["remediation_delivery"],
+                "properties": {
+                  "remediation_delivery": {
+                    "type": "object",
+                    "required": ["mode"],
+                    "properties": {
+                      "mode": { "type": "string", "enum": ["opt_in", "opt_out"] }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/files": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Admin cross-course files list (§4.7)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          {
+            "name": "canvas_term_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "canvas_course_id",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Restrict to one Canvas course"
+          },
+          { "$ref": "#/components/parameters/FileListQ" },
+          { "$ref": "#/components/parameters/FileListStatus" },
+          { "$ref": "#/components/parameters/HideReplaced" },
+          { "$ref": "#/components/parameters/FileListSort" },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/courses": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Admin scanned courses list (§4.6)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          {
+            "name": "canvas_term_id",
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "Search course name / code"
+          },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/courses/{canvas_course_id}/scope": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Course scope probe (TASK-02)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          { "$ref": "#/components/parameters/CanvasCourseId" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/courses/{canvas_course_id}/dashboard": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Course home dashboard (§4.1)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          { "$ref": "#/components/parameters/CanvasCourseId" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/courses/{canvas_course_id}/files": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Course files list (§4.2)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          { "$ref": "#/components/parameters/CanvasCourseId" },
+          { "$ref": "#/components/parameters/FileListQ" },
+          { "$ref": "#/components/parameters/FileListStatus" },
+          { "$ref": "#/components/parameters/HideReplaced" },
+          { "$ref": "#/components/parameters/FileListSort" },
+          { "$ref": "#/components/parameters/Page" },
+          { "$ref": "#/components/parameters/PageSize" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/courses/{canvas_course_id}/settings": {
+      "get": {
+        "tags": ["Access Hub"],
+        "summary": "Course remediation settings (GET) (§4.3)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          { "$ref": "#/components/parameters/CanvasCourseId" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "patch": {
+        "tags": ["Access Hub"],
+        "summary": "Course remediation settings (PATCH) (§4.3)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          { "$ref": "#/components/parameters/CanvasCourseId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["remediation_delivery"],
+                "properties": {
+                  "remediation_delivery": {
+                    "type": "object",
+                    "required": ["mode"],
+                    "properties": {
+                      "mode": { "type": "string", "enum": ["opt_in", "opt_out"] }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/AccessHubSuccess" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/access-hub/institutions/{institution_id}/courses/{canvas_course_id}/files/{canvas_file_id}/replace": {
+      "post": {
+        "tags": ["Access Hub"],
+        "summary": "Trigger Canvas file replace (queued) (§4.4)",
+        "security": [{ "basicAuth": [] }, { "signedRequest": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/InstitutionId" },
+          { "$ref": "#/components/parameters/CanvasCourseId" },
+          {
+            "name": "canvas_file_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Canvas content file id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["batch_file_id"],
+                "properties": {
+                  "batch_file_id": { "type": "string", "format": "uuid" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean", "example": true },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "request_id": { "type": "string", "format": "uuid" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "InstitutionId": {
+        "name": "institution_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "CanvasCourseId": {
+        "name": "canvas_course_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "Page": {
+        "name": "page",
+        "in": "query",
+        "schema": { "type": "integer", "minimum": 1, "default": 1 }
+      },
+      "PageSize": {
+        "name": "page_size",
+        "in": "query",
+        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+      },
+      "FileListQ": {
+        "name": "q",
+        "in": "query",
+        "schema": { "type": "string" },
+        "description": "Search display/file name"
+      },
+      "FileListStatus": {
+        "name": "status",
+        "in": "query",
+        "schema": {
+          "type": "string",
+          "enum": ["all", "in_progress", "complete", "failed"],
+          "default": "all"
+        }
+      },
+      "HideReplaced": {
+        "name": "hide_replaced_in_canvas",
+        "in": "query",
+        "schema": { "type": "boolean", "default": false }
+      },
+      "FileListSort": {
+        "name": "sort",
+        "in": "query",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "open_issues_desc",
+            "display_name_asc",
+            "display_name_desc",
+            "last_updated_desc"
+          ],
+          "default": "open_issues_desc"
+        }
+      }
+    },
+    "responses": {
+      "AccessHubSuccess": {
+        "description": "Success envelope",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["success", "data"],
+              "properties": {
+                "success": { "type": "boolean", "example": true },
+                "data": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "description": "Error envelope",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "success": { "type": "boolean", "example": false },
+                "error": {
+                  "type": "object",
+                  "properties": {
+                    "code": { "type": "string" },
+                    "message": { "type": "string" },
+                    "details": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "basicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "HTTP Basic — use `ACCESS_HUB_BASIC_USER` / `ACCESS_HUB_BASIC_PASSWORD`"
+      },
+      "signedRequest": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Signature",
+        "description": "HMAC-SHA256 over canonical string (see middleware JSDoc in `accessHubSignedAuth.middleware.ts`). Also send `X-Timestamp` (Unix seconds) and optionally `X-Nonce`. Configure `ACCESS_HUB_SIGNING_SECRETS`."
+      }
+    }
+  }
+}
