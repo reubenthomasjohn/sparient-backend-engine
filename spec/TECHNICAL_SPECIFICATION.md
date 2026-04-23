@@ -1,8 +1,8 @@
-# Sparient Backend Engine — Technical Specification (Canvas Access HUB)
+# Sparient Backend Engine — Technical Specification (Canvas Access Hub)
 
 **Document type:** Technical specification (API contracts, data mapping, workflows).  
-**Version:** 1.1  
-**Date:** 2026-04-15  
+**Version:** 1.3  
+**Date:** 2026-04-20  
 
 **Sources:** `spec/FUNCTIONAL_SPECIFICATION.md`, `prisma/schema.prisma`, `prisma/seed.ts`, `FILE_STATUSES.md`, existing Express error handling (`src/api/middleware/errorHandler.middleware.ts`, `src/utils/errors.ts`).
 
@@ -10,46 +10,27 @@
 
 ## 0. Schema alignment and resolved decisions
 
-### 0.1 Where “comments” and “enrollment” appear in the functional spec (context only)
+### 0.1 Out of scope for Access Hub API payloads
 
-| Concept | Functional spec location | Role |
-|--------|---------------------------|------|
-| **Comments** | **§3.1.1** (file list row: read-only annotations), **§4.3** (comments not editable via this API), **traceability table** (Review course files) | **Course-scoped file list:** “Review course files” — each row shows a **single comment string** for the file. |
-| **Enrollment / total students** | **§3.3.2** (Scanned Courses per-row: “Total students (or enrollment count as available)”) | **Admin — Scanned Courses** tab only; not used on course file review or course home. |
+- **Per-file review comments** — do **not** expose a separate `comment` field derived from `BatchFile.error_message` or other annotation strings for the Review table. Use **`status.summary`** (and related fields) for human-readable accessibility text per functional §3.1.1.
+- **Enrollment / total students** — do **not** include enrollment or headcount on **Scanned courses** or any other endpoint.
 
-These are **different UI surfaces**: comments are **per file** in the **course** module; enrollment is **per course** in the **admin** module list.
+### 0.2 Dashboard metrics (aligned with functional §3.2 / §3.3.1)
 
-### 0.2 File “comments” — implementation (no separate comments table)
+- **No accessibility scores:** do **not** return `score_percent`, bands, letter grades, impact scorecards, or per-type scores. Aggregates are **counts** and **category/issue breakdowns** only.
+- **Course home** (`§4.1`): issue totals (**total reported**, **resolved**, **still open**), file-pipeline counts (**total files**, **scanned**, **with issues**, **awaiting review**, **fixed by Access Hub**, **replaced in Canvas** — exact JSON keys are implementation choices but must cover these concepts), **high-impact files** (identity + open issue count), **issues by file type** (`file_type`, **files** with issues, **issues** count), and **`issue_categories`** (see §0.3). **Current policy** text/mode still comes from **§4.3** (settings), not from the dashboard response alone.
+- **Admin dashboard** (`§4.5`): same **counts-and-pipeline** spirit as course home at institution scope (see functional §3.3.1); **no** account percentage or score matrix. Include institution-level **`issue_categories`** rollup where the admin UI shows it.
 
-- **Remediation artifact** rows live in **`batch_files`** (`BatchFile`).
-- **API field:** `comment` (string, not an array).
-- **Rule:** If the **latest `BatchFile`** for that `SourceFile` has `error_message` set, expose it as `comment`; otherwise **`""`** (empty string).
-- **Resolution of “latest”:** Define consistently (e.g. `ORDER BY created_at DESC` or tie-break by `batch_id`); document in implementation.
+### 0.3 `FileIssueCategory` on dashboards — listed by category
 
-### 0.3 Total students — not in scope
+- Table **`file_issue_categories`** (`FileIssueCategory`): `category` (string), `found`, `fixed`, `remaining` (integers), tied to a **`BatchFile`**.
+- **Dashboard list:** Return an array, e.g. `issue_categories`, where each element is `{ "category": "string", "found": 0, "fixed": 0, "remaining": 0 }`.
+- **Aggregation rule (course or institution scope):** For each `SourceFile` in scope, take the **latest** `BatchFile` that represents the current remediation snapshot (define consistently: e.g. latest terminal `BatchFile` by `created_at`, or latest with `FileIssueCategory` rows — **finalize in implementation**). Sum `found`, `fixed`, and `remaining` **per `category` value** across those rows. Sort the list by a stable rule (e.g. category name, or remaining descending).
+- **Granularity:** Individual scanner violations are **not** modeled row-by-row in schema today; the **listed** issues on the dashboard are **category rows** with the three counts. Finer-grained lines require future schema or vendor payloads.
 
-- Do **not** return `total_students` in API responses until enrollment is in scope.
-- **OpenAPI / TypeScript models:** may reserve the field **commented out** until implemented, for example:
+### 0.4 Other persistence gaps
 
-```typescript
-// total_students: number | null  // not in scope — enrollment sync TBD
-```
-
-### 0.4 Dashboard metrics — database
-
-- **Admin dashboard** and **course home** aggregates that lack backing columns today (e.g. content summary, “marked resolved”, “files marked reviewed”, institution rollups) require **new columns** (and/or roll-up tables) added via migration — **TODO: schema design** alongside implementation.
-
-### 0.5 Accessibility score — calculation
-
-- **Course-level** `accessibility.score_percent` (and institution-level **account** score where applicable):
-  - Let `total_files` = count of `SourceFile` rows for the course (or institution scope).
-  - Let `files_remediated` = count of `SourceFile` rows that count as **remediated** (product rule: e.g. `last_outcome` in `completed` / `completed_with_warnings` with a successful `BatchFile` / `remediated_s3_key` present — **finalize** in implementation).
-  - **Score:** `score_percent = round(100 * files_remediated / total_files)` when `total_files > 0`, else `0` (or `100` if zero files — **confirm** with product).
-- **Band** (`needs_attention` | `fair` | `good` | `strong`) is derived from `score_percent` with thresholds **TBD** (or match UI).
-
-### 0.6 Impact scorecard — `FileIssueCategory.category` → high / medium / low
-
-- **TODO:** Clarify mapping (scheduled follow-up). Until then, implement `impact_scorecard` as **placeholders** or omit from response if not yet defined.
+- Some rollups (e.g. **awaiting review** if driven by `SourceFile.review_acknowledged` and pipeline state) may combine existing columns with derived rules; additional columns or materialized views remain optional — design alongside implementation.
 
 ---
 
@@ -149,7 +130,7 @@ Source files do not store a single `status` enum; UI states are **derived** per 
 
 Exact label strings are UI copy; API should expose **stable enums** in addition to display strings, e.g. `canvas_replacement: "pending" | "replaced" | "failed" | "not_applicable"`.
 
-**Status filter** (all / pending / done / failed): implement as filters on the above derived enums, not raw DB enums alone.
+**Status filter** (e.g. all / in progress / complete / failed): implement as filters on the above derived enums, not raw DB enums alone (exact enum labels match functional §3.1.1).
 
 ---
 
@@ -159,7 +140,7 @@ Exact label strings are UI copy; API should expose **stable enums** in addition 
 
 **GET** `/api/v1/access-hub/institutions/{institution_id}/courses/{canvas_course_id}/dashboard`
 
-**Purpose:** §3.2 — course accessibility score, counts, issues by file type, impact scorecard.
+**Purpose:** §3.2 — issue totals, file-pipeline counts, high-impact files, issues by file type, **`issue_categories`** list (§0.3). **No** scores or score matrices.
 
 **Path parameters**
 
@@ -175,37 +156,49 @@ Exact label strings are UI copy; API should expose **stable enums** in addition 
   "success": true,
   "data": {
     "canvas_course_id": "string",
-    "accessibility": {
-      "score_percent": 0,
-      "band": "needs_attention | fair | good | strong"
+    "issues": {
+      "total_reported": 0,
+      "resolved": 0,
+      "still_open": 0
     },
     "counts": {
       "total_files": 0,
       "files_scanned": 0,
-      "files_with_open_issues": 0,
-      "open_issues": 0,
-      "files_remediated": 0,
+      "files_with_issues": 0,
+      "awaiting_review": 0,
+      "fixed_by_access_hub": 0,
       "files_replaced_in_canvas": 0
     },
-    "issues_by_file_type": [
+    "high_impact_files": [
       {
-        "file_type": "pdf | image | word | excel | powerpoint | video | other",
-        "issue_count": 0,
-        "score_percent": 0
+        "source_file_id": "uuid",
+        "canvas_file_id": "string",
+        "display_name": "string",
+        "open_issues": 0
       }
     ],
-    "impact_scorecard": {
-      "high": 0,
-      "medium": 0,
-      "low": 0
-    }
+    "issues_by_file_type": [
+      {
+        "file_type": "string",
+        "files": 0,
+        "issues": 0
+      }
+    ],
+    "issue_categories": [
+      {
+        "category": "string",
+        "found": 0,
+        "fixed": 0,
+        "remaining": 0
+      }
+    ]
   }
 }
 ```
 
 **Errors:** 401, 403, 404 (`course` or `institution` not found).
 
-**Notes:** Aggregates come from `Course` → `SourceFile` → latest `BatchFile` / `FileIssueCategory` as applicable. **`accessibility.score_percent`** follows §0.5. Other dashboard fields may depend on **new DB columns** (§0.4).
+**Notes:** Derive counts from `Course` → `SourceFile` → latest relevant `BatchFile` / `FileIssueCategory` per §0.2–§0.3. **`high_impact_files`** is typically ordered by `open_issues` descending; membership rule (e.g. open_issues > 0) is product-owned. Policy copy for Home still comes from **§4.3** GET settings.
 
 ---
 
@@ -222,8 +215,9 @@ Exact label strings are UI copy; API should expose **stable enums** in addition 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `q` | string | No | Search across `display_name`, `file_name`. |
-| `status` | enum | No | `all` (default), `pending`, `done`, `failed` — maps to derived remediation/replacement state. |
+| `status` | enum | No | `all` (default), `in_progress`, `complete`, `failed` — maps to derived remediation/replacement state. |
 | `hide_replaced_in_canvas` | boolean | No | Default `false`. If `true`, exclude rows where Canvas replacement is `replaced`. |
+| `sort` | string | No | e.g. `open_issues_desc` — matches Review sort controls. |
 | `page` | integer | No | 1-based. |
 | `page_size` | integer | No | Max e.g. 100. |
 
@@ -242,6 +236,8 @@ Exact label strings are UI copy; API should expose **stable enums** in addition 
         "file_type": "pdf | image | word | excel | powerpoint | video | other",
         "mime_type": "string",
         "last_updated": "2026-04-15T12:00:00.000Z",
+        "open_issues": 0,
+        "review_acknowledged": false,
         "status": {
           "pipeline": "needs_upload | needs_batching | in_flight | terminal | deleted",
           "last_outcome": "completed | completed_with_warnings | failed | permanently_failed | deleted | null",
@@ -250,8 +246,7 @@ Exact label strings are UI copy; API should expose **stable enums** in addition 
         "canvas_replacement": {
           "state": "pending | replaced | failed | not_applicable",
           "writeback_state": "written | skipped_stale | failed | null"
-        },
-        "comment": ""
+        }
       }
     ],
     "page": { "number": 1, "size": 20, "total_items": 0 }
@@ -261,7 +256,7 @@ Exact label strings are UI copy; API should expose **stable enums** in addition 
 
 **Errors:** 400 (invalid query), 401, 403, 404.
 
-**Note:** `comment` — string from **latest `BatchFile.error_message`** for this `SourceFile`, else `""` (§0.2). Same rule for **§4.7** file rows.
+**Note:** **`open_issues`** from latest relevant `BatchFile` / `FileIssueCategory` (or product rule). **`review_acknowledged`** from `SourceFile.review_acknowledged`. Do **not** return a separate review **`comment`** field. Same row shape for **§4.7** (plus course context fields).
 
 ---
 
@@ -369,29 +364,39 @@ Mapping: `mode` is `opt_out` when `effective_writeback_opt_in === true`, else `o
   "success": true,
   "data": {
     "institution_id": "uuid",
-    "account_accessibility": {
-      "score_percent": 0,
-      "band": "string"
+    "scanned_courses": 0,
+    "issues": {
+      "total_reported": 0,
+      "resolved": 0,
+      "still_open": 0
     },
-    "total_scanned_courses": 0,
-    "impact_scorecard": { "high": 0, "medium": 0, "low": 0 },
     "content_summary": {
       "errors": 0,
       "suggestions": 0,
       "issues_fixed": 0,
       "marked_resolved": 0
     },
-    "course_files_summary": {
-      "file_issues": 0,
+    "file_pipeline": {
       "total_files": 0,
-      "files_remediated": 0,
-      "files_marked_reviewed": 0
-    }
+      "files_scanned": 0,
+      "files_with_issues": 0,
+      "awaiting_review": 0,
+      "fixed_by_access_hub": 0,
+      "files_replaced_in_canvas": 0
+    },
+    "issue_categories": [
+      {
+        "category": "string",
+        "found": 0,
+        "fixed": 0,
+        "remaining": 0
+      }
+    ]
   }
 }
 ```
 
-**Notes:** `canvas_term_id` filters which `Course` rows participate. Metrics that need persistence (**marked_resolved**, **files_marked_reviewed**, full **content_summary**, etc.) require **new columns** per §0.4.
+**Notes:** `canvas_term_id` filters which `Course` rows participate. **`issue_categories`** uses the same aggregation approach as §0.3 across all `SourceFile` rows in scope. Optional summary fields may still rely on **new columns** or rollups (§0.4).
 
 **Errors:** 401, 403, 404.
 
@@ -444,7 +449,6 @@ Mapping: `mode` is `opt_out` when `effective_writeback_opt_in === true`, else `o
 **Derivation hints:**
 
 - `initial_scan_at` / `last_scanned_at`: from `Batch` for that `course_id` (e.g. min/max `created_at` or `completed_at` where `is_initial_sync` / terminal — **define in implementation**).
-- **`total_students`:** not in scope — **omit** from JSON responses. Reserved in client models as commented-out property (§0.3).
 
 **Errors:** 400, 401, 403, 404.
 
@@ -503,8 +507,36 @@ Mapping: `mode` is `opt_out` when `effective_writeback_opt_in === true`, else `o
 
 ## 5. Authorization model
 
-- **Tenant boundary:** Every request is scoped by `institution_id` from the path (or resolved from credentials if future multi-tenant Basic auth maps user → institution). Cross-institution access must return **403** or **404** (choose one policy and document; `ConnectivoApiKey` comment in schema suggests **reject cross-institution** for scoped keys).
-- **Course scope:** Course endpoints must verify `Course.institution_id === institution_id` from path.
+### 5.1 Current phase (implemented direction)
+
+- **Tenant boundary:** Every request is scoped by `institution_id` in the path. The caller (e.g. Access Hub UI backend or LTI middleware) must only request resources for the institution it represents. Cross-institution access must return **403** or **404** (pick one policy and apply consistently).
+- **Course scope:** Course endpoints must verify `Course.institution_id === institution_id` from the path.
+- **Authentication:** HTTP Basic (or equivalent shared secret) as in §1.2 — suitable for early integration when the **only** client is a trusted server. **Target replacement:** **signed service requests** (§5.3) for calls from LMS integration middleware to this API.
+
+### 5.2 End-user and platform identity (middleware responsibility)
+
+The **Sparient Access Hub API** is invoked server-to-server. End-user and LMS context are established **before** that call (typical patterns below). The middleware then calls this API using **§5.3** (or Basic during transition).
+
+| Layer | Role |
+|-------|------|
+| **LTI 1.3** | Launch in Canvas (or other LTI 1.3 platform): validate platform-signed JWTs (`iss`, `aud`, `exp`, nonce); read context and role claims; map instructor vs admin. |
+| **OAuth 2.0 / OIDC (Canvas as IdP)** | User completes Canvas login; middleware obtains tokens and may call Canvas APIs to confirm course access; middleware issues or holds a session. |
+| **Per-tenant secrets for signing** | Signing key material used for **§5.3** may be stored per `Institution` (or per deployment); rotate on a schedule. |
+
+**Principles:** (1) Do **not** rely on path parameters alone once any untrusted client could reach this API — the signing key (or Basic secret) must bind to **institution** (and optionally service identity). (2) Separate instructor (course) and institution-admin surfaces in the middleware (routes, keys, or claims). (3) Prefer **short-lived** proof of freshness in signatures (timestamp window) over long-lived passwords for production traffic.
+
+### 5.3 Signed service requests (target for API authentication)
+
+**Goal:** Only a **trusted integration service** (BFF / LTI tool server) that already validated LMS context may call `/api/v1/access-hub/**`. Requests carry a **cryptographic signature**; this API verifies it with a **shared secret** or **verifying key** configured per institution (or global deployment key with path-scoped checks).
+
+**Recommended pattern (illustrative; exact headers and string-to-sign belong in OpenAPI / implementation):**
+
+1. **Canonical string** includes at least: HTTP method, path (and query if present), **SHA-256 hash of body** (or empty body marker), **Unix timestamp** (seconds), and a **nonce** or request id if replay protection beyond clock skew is required.
+2. **HMAC-SHA256** (or equivalent) over that canonical string using the institution’s **signing secret** (or a deployment-wide secret plus mandatory `institution_id` match in path).
+3. Client sends signature in a dedicated header (e.g. `X-Signature`) plus `X-Timestamp` (and optional `X-Nonce`). Reject if timestamp is outside an allowed skew (e.g. ±5 minutes).
+4. **TLS** is still required in production; signing is **not** a substitute for HTTPS.
+
+**401** if signature missing, malformed, or wrong; **403** if signature valid but `institution_id` in the path is not allowed for that key.
 
 ---
 
@@ -586,33 +618,21 @@ function institutionDashboard(institutionId, canvasTermId?):
   courses = DB.find all Course where institution_id = institutionId
   if canvasTermId:
     courses = filter courses where canvas_term_id == canvasTermId OR policy for null term
-  aggregate source_files and batches for those courses
-  account_score_percent = 100 * sum(files_remediated across courses) / sum(total_files)  // or §0.5 per institution scope; align with product
-  read content_summary / marked_resolved from NEW columns when migrated (§0.4)
+  aggregate source_files and batches for those courses into issue totals, file_pipeline counts, content_summary (counts only)
+  issue_categories = rollup FileIssueCategory per §0.3 across all SourceFiles in those courses
+  return JSON  // no score_percent or impact scorecard
+```
+
+### 6.7 Course home dashboard rollups
+
+```
+function courseDashboard(institutionId, canvasCourseId):
+  course = getCourse(institutionId, canvasCourseId)
+  compute issues.{total_reported, resolved, still_open} and counts.* per §4.1 / functional §3.2
+  high_impact_files = filter/sort SourceFiles with open_issues (product rule)
+  issues_by_file_type = group by file type with files + issues counts
+  issue_categories = rollup FileIssueCategory per §0.3 for SourceFiles in course
   return JSON
-```
-
-### 6.7 Course accessibility score (percent)
-
-```
-function courseAccessibilityScorePercent(courseId):
-  total_files = COUNT SourceFile WHERE course_id = courseId
-  if total_files == 0:
-    return 0  // or 100 per product — confirm
-  remediated = COUNT SourceFile WHERE course_id = courseId AND <remediated predicate>
-  return round(100 * remediated / total_files)
-```
-
-`<remediated predicate>` must match `counts.files_remediated` in §4.1 (same definition everywhere).
-
-### 6.8 File row comment string
-
-```
-function fileCommentString(sourceFileId):
-  bf = latest BatchFile for sourceFileId  // ORDER BY created_at DESC LIMIT 1
-  if bf.error_message is not null and bf.error_message != "":
-    return bf.error_message
-  return ""
 ```
 
 ---
@@ -621,13 +641,14 @@ function fileCommentString(sourceFileId):
 
 ### 7.1 Authentication
 
-- **HTTP Basic** per functional spec; store **hashed** credentials or secure compare in config (`seed.ts` pattern uses hashing for API keys — mirror for Basic password).
-- **TLS** in production; Basic over plaintext is unacceptable outside dev.
+- **Initial:** HTTP Basic per §1.2 / functional spec; store **hashed** credentials or secure compare in config.
+- **Target:** **Signed service requests** per **§5.3** from LMS integration middleware; document header names and string-to-sign in OpenAPI when implemented.
+- **TLS** in production; credentials or signing secrets must never be sent except over HTTPS.
 
 ### 7.2 Authorization
 
 - Enforce **institution scoping** on every query (`WHERE institution_id = :id` via joins on `Course` / `Institution`).
-- Optional future: map Basic user to `institution_id` or role (admin vs instructor) — **not in current schema**; add before exposing mixed-role tenants.
+- See **§5** for tenant rules and recommended LMS-oriented authentication and authorization patterns beyond Basic + path scope.
 
 ### 7.3 Caching
 
@@ -671,5 +692,7 @@ function fileCommentString(sourceFileId):
 
 | Version | Date | Summary |
 |---------|------|---------|
-| 1.0 | 2026-04-15 | Initial technical specification from functional spec + Prisma schema + FILE_STATUSES. |
+| 1.3 | 2026-04-20 | §5: adopt **signed service requests** as target API auth (§5.3); LTI/OAuth as middleware-only; remove mTLS as co-primary option; §7.1 aligned. |
+| 1.2 | 2026-04-20 | Aligned dashboards with functional §3.2/§3.3.1: no scores; `issue_categories` list (`found`/`fixed`/`remaining`); course home high-impact files and issues-by-type; removed review `comment` and enrollment; file list adds `open_issues`, `review_acknowledged`, sort; expanded §5 with LMS-friendly auth options (LTI 1.3, OAuth, etc.). |
 | 1.1 | 2026-04-15 | Comments from `BatchFile.error_message`; `batch_file_id` only for replace; score from remediated vs total files; dashboard metrics need new DB columns; enrollment out of scope; impact tier mapping TODO; functional-spec cross-ref for comments vs enrollment. |
+| 1.0 | 2026-04-15 | Initial technical specification from functional spec + Prisma schema + FILE_STATUSES. |

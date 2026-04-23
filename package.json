@@ -12,7 +12,9 @@
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
-    "db:seed": "ts-node-dev --transpile-only prisma/seed.ts"
+    "db:seed": "ts-node-dev --transpile-only prisma/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "prisma": {
     "seed": "ts-node-dev --transpile-only prisma/seed.ts"
@@ -32,6 +34,7 @@
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
     "pg": "^8.20.0",
+    "swagger-ui-express": "^5.0.1",
     "winston": "^3.13.0",
     "zod": "^3.22.4"
   },
@@ -41,8 +44,11 @@
     "@types/morgan": "^1.9.9",
     "@types/node": "^20.12.5",
     "@types/pg": "^8.20.0",
+    "@types/swagger-ui-express": "^4.1.8",
     "prisma": "^7.7.0",
+    "supertest": "^7.0.0",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^3.0.0"
   }
 }

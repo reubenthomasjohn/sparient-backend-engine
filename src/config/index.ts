@@ -34,6 +34,25 @@ const configSchema = z.object({
     discoveryUrl: z.string().optional(),
     startConsumers: z.coerce.boolean().default(true),
   }),
+  accessHub: z.object({
+    basicUser: z.string().min(1),
+    basicPassword: z.string().min(1),
+    /**
+     * JSON map of signing secrets for HMAC-SHA256 auth (TASK-12 / §5.3).
+     * Format: { "<institution_id>": "<secret>", "*": "<global_secret>" }
+     * Key "*" = global deployment secret (any institution path allowed unless
+     * ACCESS_HUB_SIGNING_ALLOWED_INSTITUTIONS restricts it).
+     * Omit or leave empty to disable signed auth (Basic auth only).
+     */
+    signingSecrets: z.string().optional(),
+    /**
+     * Comma-separated institution UUIDs allowed for the global ("*") signing key.
+     * Empty or absent = all institutions allowed for the global key.
+     */
+    signingAllowedInstitutions: z.string().optional(),
+    /** Clock skew tolerance in seconds (default 300 = ±5 min). */
+    signingSkewSeconds: z.coerce.number().default(300),
+  }),
 });
 
 const parsed = configSchema.safeParse({
@@ -62,6 +81,13 @@ const parsed = configSchema.safeParse({
     discoveryUrl: process.env.SQS_DISCOVERY_URL,
     startConsumers: process.env.QUEUE_START_CONSUMERS,
   },
+  accessHub: {
+    basicUser: process.env.ACCESS_HUB_BASIC_USER || 'access-hub',
+    basicPassword: process.env.ACCESS_HUB_BASIC_PASSWORD || 'local-dev-secret',
+    signingSecrets: process.env.ACCESS_HUB_SIGNING_SECRETS,
+    signingAllowedInstitutions: process.env.ACCESS_HUB_SIGNING_ALLOWED_INSTITUTIONS,
+    signingSkewSeconds: process.env.ACCESS_HUB_SIGNING_SKEW_SECONDS,
+  },
 });
 
 if (!parsed.success) {
@@ -72,4 +98,16 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const config = parsed.data;
+const configData = parsed.data;
+
+if (
+  configData.app.nodeEnv === 'production' &&
+  configData.accessHub.basicPassword === 'local-dev-secret'
+) {
+  console.error(
+    'ACCESS_HUB_BASIC_PASSWORD must be set to a non-default value in production.',
+  );
+  process.exit(1);
+}
+
+export const config = configData;

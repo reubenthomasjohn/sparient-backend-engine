@@ -3,6 +3,22 @@ import { ZodError } from 'zod';
 import { AppError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 
+function isMalformedJsonBodyError(err: unknown): boolean {
+  if (!(err instanceof SyntaxError)) {
+    return false;
+  }
+  const e = err as SyntaxError & {
+    status?: number;
+    statusCode?: number;
+    type?: string;
+  };
+  return (
+    e.status === 400 ||
+    e.statusCode === 400 ||
+    e.type === 'entity.parse.failed'
+  );
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
@@ -11,9 +27,23 @@ export function errorHandler(
   _next: NextFunction,
 ): void {
   if (err instanceof AppError) {
+    if (err.statusCode === 401 && err.code === 'UNAUTHORIZED') {
+      res.setHeader('WWW-Authenticate', 'Basic realm="Access Hub"');
+    }
     res.status(err.statusCode).json({
       success: false,
       error: { code: err.code, message: err.message },
+    });
+    return;
+  }
+
+  if (isMalformedJsonBodyError(err)) {
+    res.status(400).json({
+      success: false,
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'Malformed JSON body',
+      },
     });
     return;
   }
