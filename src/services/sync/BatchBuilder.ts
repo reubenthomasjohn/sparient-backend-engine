@@ -8,13 +8,14 @@ export interface BuildOptions {
   isInitialSync?: boolean;
   isRetry?: boolean;
   forceReprocess?: boolean;
+  s3Bucket: string;
 }
 
 export class BatchBuilder {
   async buildForCourse(
     institution: Institution,
     course: Course,
-    options: BuildOptions = {},
+    options: BuildOptions,
   ): Promise<Batch | null> {
     // Pull potentially-eligible files, then filter the cross-column condition in JS.
     const candidates = await prisma.sourceFile.findMany({
@@ -100,7 +101,7 @@ export class BatchBuilder {
     // Publish request.json to S3. If this fails, roll back the claim AND record
     // the failure properly (incrementing retryCount via computeFailureUpdate).
     try {
-      await requestPublisher.publish(batch, institution, course, options.forceReprocess ?? options.isRetry ?? false);
+      await requestPublisher.publish(batch, institution, course, options.s3Bucket, options.forceReprocess ?? options.isRetry ?? false);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.error('BatchBuilder: request publish failed, rolling back', {

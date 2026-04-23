@@ -16,6 +16,7 @@ export type DiscoveryJob =
 export interface UploadJob {
   sourceFileId: string;
   modifiedAtMs: number;
+  s3Bucket: string;
 }
 
 function build<T>(name: string, url?: string): Queue<T> {

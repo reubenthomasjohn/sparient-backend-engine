@@ -3,7 +3,6 @@ import prisma from '../../db/client';
 import { ConnectivoResultsPayload } from '../../types/connectivo';
 import { logger } from '../../utils/logger';
 import { Errors } from '../../utils/errors';
-import { config } from '../../config';
 import { computeFailureUpdate } from '../../utils/failure';
 
 const STATE_MAP: Record<string, ConnectivoFileState> = {
@@ -73,7 +72,7 @@ export class RemediationService {
             connectivoState,
             qualityLabel,
             remediatedS3Key,
-            remediatedS3Bucket: remediatedS3Key ? config.aws.s3Bucket : null,
+            remediatedS3Bucket: remediatedS3Key ? batch.requestS3Bucket : null,
             totalPages: result.total_pages,
             processingTimeSecs: result.processing_time_seconds,
             verapdfErrors: result.verapdf_errors,

@@ -72,7 +72,7 @@ export class CanvasFileReplacer {
     });
 
     const courseId = await this.courseIdFromFile(existing);
-    const body = await s3Service.getSourceFileBytes(params.s3Key);
+    const body = await s3Service.getSourceFileBytes(params.s3Bucket, params.s3Key);
     const uploaded = await this.client.uploadCourseFile(body, {
       courseId,
       fileName: existing.filename,
@@ -86,7 +86,7 @@ export class CanvasFileReplacer {
   }
 
   async uploadNewFile(params: UploadNewFileParams): Promise<DiscoveredFile> {
-    const body = await s3Service.getSourceFileBytes(params.s3Key);
+    const body = await s3Service.getSourceFileBytes(params.s3Bucket, params.s3Key);
     const uploaded = await this.client.uploadCourseFile(body, {
       courseId: params.courseExternalId,
       fileName: params.fileName,
@@ -112,7 +112,7 @@ export class CanvasFileReplacer {
     const existing = await this.client.getFile(params.fileExternalId);
 
     const courseId = await this.courseIdFromFile(existing);
-    const body = await s3Service.getSourceFileBytes(params.s3Key);
+    const body = await s3Service.getSourceFileBytes(params.s3Bucket, params.s3Key);
     const uploaded = await this.client.uploadCourseFile(body, {
       courseId,
       fileName: params.fileName,

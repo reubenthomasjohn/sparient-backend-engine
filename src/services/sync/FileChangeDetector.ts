@@ -2,10 +2,14 @@ import { Course } from '@prisma/client';
 import { DiscoveredFile } from '../../types/source';
 import prisma from '../../db/client';
 import { logger } from '../../utils/logger';
-import { UploadJob } from '../../queue';
+
+export interface FileToUpload {
+  sourceFileId: string;
+  modifiedAtMs: number;
+}
 
 export interface ChangeDetectionResult {
-  toUploadJobs: UploadJob[];
+  toUploadJobs: FileToUpload[];
   deletedCount: number;
 }
 
@@ -17,7 +21,7 @@ export class FileChangeDetector {
     const existingByCanvasId = new Map(existing.map((f) => [f.canvasFileId, f]));
     const discoveredIds = new Set(discovered.map((f) => f.externalId));
 
-    const toUploadJobs: UploadJob[] = [];
+    const toUploadJobs: FileToUpload[] = [];
 
     for (const d of discovered) {
       const row = existingByCanvasId.get(d.externalId);

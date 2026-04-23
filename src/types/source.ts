@@ -21,6 +21,7 @@ export interface DiscoveredFile {
 // whose bytes should be pushed back to the source; callers pin the version to upload
 // by choosing the key.
 interface UploadFromS3Base {
+  s3Bucket: string;
   s3Key: string;
   mimeType: string;
 }

@@ -4,25 +4,26 @@ import { SourceRegistry } from '../../services/sources/SourceRegistry';
 import { ISourceClient } from '../../services/sources/ISourceClient';
 import { FileChangeDetector } from '../../services/sync/FileChangeDetector';
 import { BatchBuilder } from '../../services/sync/BatchBuilder';
+import { getBucketName } from '../../config/s3Bucket';
 import { logger } from '../../utils/logger';
 
 const changeDetector = new FileChangeDetector();
 const batchBuilder = new BatchBuilder();
 
 // ---------------------------------------------------------------------------
-// Step 0: Discover courses for an institution. Returns the course list for
-// the outer Map state. Called once per SFN execution.
+// Step 0: Discover courses. Resolves s3Bucket once, flows to all downstream steps.
 // ---------------------------------------------------------------------------
 
 export interface DiscoverCoursesInput {
   step: 'discover-courses';
   institutionId: string;
   force?: boolean;
-  singleCourseId?: string;  // if set, only process this one course (manual single-course sync)
+  singleCourseId?: string;
 }
 
 export interface DiscoverCoursesOutput {
   institutionId: string;
+  s3Bucket: string;
   force: boolean;
   courses: { canvasCourseId: string; courseId: string }[];
 }
@@ -57,8 +58,6 @@ export async function discoverCourses(input: DiscoverCoursesInput): Promise<Disc
     });
   }
 
-  // Fetch the internal UUIDs for the Map state. If singleCourseId is set,
-  // filter to just that course (manual single-course sync via API).
   const courseFilter = input.singleCourseId
     ? [input.singleCourseId]
     : discovered.map((c) => c.externalId);
@@ -71,26 +70,31 @@ export async function discoverCourses(input: DiscoverCoursesInput): Promise<Disc
     select: { id: true, canvasCourseId: true },
   });
 
+  // Resolve bucket once — flows through the Map to all downstream steps.
+  const s3Bucket = getBucketName(institution.id, institution.s3Bucket);
+
   logger.info('DiscoverCourses: complete', {
     institutionId: input.institutionId,
+    s3Bucket,
     courseCount: courses.length,
   });
 
   return {
     institutionId: input.institutionId,
+    s3Bucket,
     force: input.force ?? false,
     courses: courses.map((c) => ({ canvasCourseId: c.canvasCourseId, courseId: c.id })),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: Discover files for a single course. Returns file IDs (not full
-// payloads) — the Upload step reads file data from DB.
+// Step 1: Discover files for a single course.
 // ---------------------------------------------------------------------------
 
 export interface DiscoverFilesInput {
   step: 'discover-files';
   institutionId: string;
+  s3Bucket: string;
   canvasCourseId: string;
   courseId: string;
   force?: boolean;
@@ -98,11 +102,12 @@ export interface DiscoverFilesInput {
 
 export interface DiscoverFilesOutput {
   institutionId: string;
+  s3Bucket: string;
   canvasCourseId: string;
   courseId: string;
   isInitialSync: boolean;
   hasWork: boolean;
-  fileIds: string[];    // source_file UUIDs that need uploading
+  fileIds: string[];
 }
 
 export async function discoverFiles(input: DiscoverFilesInput): Promise<DiscoverFilesOutput> {
@@ -122,10 +127,8 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
   );
   const result = await changeDetector.detect(course, discovered);
 
-  // Return just the IDs — upload step reads full data from DB.
   const fileIds = result.toUploadJobs.map((j) => j.sourceFileId);
 
-  // Check for retry-eligible files (respecting backoff window).
   const now = new Date();
   const retryCount = await prisma.sourceFile.count({
     where: {
@@ -139,8 +142,6 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
     where: { courseId: input.courseId, status: 'pending', requestWrittenAt: null },
   });
 
-  // Check if there are files needing batching (uploaded but not yet batched).
-  // Prisma can't express cross-column comparison, so use raw SQL for the COUNT.
   const [{ count: needsBatchingCount }] = await prisma.$queryRaw<[{ count: bigint }]>`
     SELECT COUNT(*) as count FROM source_files
     WHERE course_id = ${input.courseId}
@@ -165,6 +166,7 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
 
   return {
     institutionId: input.institutionId,
+    s3Bucket: input.s3Bucket,
     canvasCourseId: input.canvasCourseId,
     courseId: input.courseId,
     isInitialSync,
@@ -174,12 +176,13 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Upload a single file. Reads file data from DB by ID.
+// Step 2: Upload a single file.
 // ---------------------------------------------------------------------------
 
 export interface UploadFileInput {
   step: 'upload-file';
   sourceFileId: string;
+  s3Bucket: string;
 }
 
 export interface UploadFileOutput {
@@ -203,6 +206,7 @@ export async function uploadFile(input: UploadFileInput): Promise<UploadFileOutp
     await handleUploadJob({
       sourceFileId: input.sourceFileId,
       modifiedAtMs: row.discoveredModifiedAt.getTime(),
+      s3Bucket: input.s3Bucket,
     });
     return { sourceFileId: input.sourceFileId, success: true };
   } catch (err) {
@@ -213,13 +217,13 @@ export async function uploadFile(input: UploadFileInput): Promise<UploadFileOutp
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: Batch all uploaded files + publish request.json. Reads eligible
-// files from DB — doesn't rely on SFN payload for file data.
+// Step 3: Batch + publish.
 // ---------------------------------------------------------------------------
 
 export interface BatchPublishInput {
   step: 'batch-publish';
   institutionId: string;
+  s3Bucket: string;
   canvasCourseId: string;
   courseId: string;
   isInitialSync: boolean;
@@ -239,16 +243,13 @@ export async function batchPublish(input: BatchPublishInput): Promise<BatchPubli
     where: { id: input.courseId },
   });
 
-  // Retry failed files + release stuck batches before batching.
   const hadRetries = await retryCourseFiles(input.courseId);
   await releaseStuckBatches(input.courseId);
 
-  // force_reprocess = true if: explicit force sync, OR retried files are in this batch.
-  // Connectivo checks file hashes and skips unchanged files — retries need this flag
-  // so Connectivo actually reprocesses them.
   const batch = await batchBuilder.buildForCourse(institution, course, {
     isInitialSync: input.isInitialSync,
     forceReprocess: input.force || hadRetries,
+    s3Bucket: input.s3Bucket,
   });
 
   await prisma.course.update({
@@ -283,7 +284,6 @@ async function retryCourseFiles(courseId: string): Promise<boolean> {
     select: { id: true, retryCount: true, maxRetries: true },
   });
 
-  // Prisma can't express retryCount < maxRetries cross-column, so filter in JS.
   const retriable = eligible.filter((f) => f.retryCount < f.maxRetries);
   if (retriable.length === 0) return false;
 

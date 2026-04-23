@@ -18,13 +18,15 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       const s3Event = JSON.parse(record.body) as S3Event;
       for (const r of s3Event.Records) {
         const fullKey = decodeURIComponent(r.s3.object.key.replace(/\+/g, ' '));
-        // Strip the responses prefix from the key — handler works with prefix-relative keys.
         const prefixWithSlash = `${S3_PREFIX.RESPONSES}/`;
         const key = fullKey.startsWith(prefixWithSlash)
           ? fullKey.slice(prefixWithSlash.length)
           : fullKey;
 
-        await handleResponseJob({ prefix: S3_PREFIX.RESPONSES, key });
+        await handleResponseJob({
+          bucket: r.s3.bucket.name,  // actual bucket from S3 event (per-institution)
+          key,
+        });
       }
     } catch (err) {
       logger.error('Responses Lambda: record failed', {

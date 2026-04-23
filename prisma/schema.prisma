@@ -60,6 +60,10 @@ model Institution {
   // Sync scheduling. syncTime is "HH:MM" in UTC (e.g. "02:00"). The tick handler
   // (EventBridge every 15 min) enqueues a discover if sync_enabled=true AND current
   // time is within syncTime's 15-min window AND lastSyncedAt < start of today.
+  // S3 bucket override. NULL = convention-based name (sparient-<institutionId>).
+  // Set only when a client needs a non-standard bucket name.
+  s3Bucket     String?   @map("s3_bucket") @db.VarChar(63)
+
   syncEnabled  Boolean   @default(true)  @map("sync_enabled")
   syncTime     String    @default("02:00") @map("sync_time") @db.VarChar(5)
   lastSyncedAt DateTime? @map("last_synced_at")

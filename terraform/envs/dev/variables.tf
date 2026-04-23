@@ -26,12 +26,8 @@ variable "neon_api_key" {
   sensitive = true
 }
 
-# Single S3 bucket with 4 prefixes (connectivo-incoming/, connectivo-remediated/,
-# sparient-remediation-requests/, sparient-remediation-responses/).
-variable "s3_bucket" {
-  type    = string
-  default = "sparient-remediation-testing"
-}
+# S3 buckets are per-institution (sparient-<institutionId>), created dynamically by
+# InstitutionBucketService. No global bucket variable — IAM uses sparient-* wildcard.
 
 # Concurrency caps on the SQS event source mappings.
 variable "discovery_max_concurrency" {

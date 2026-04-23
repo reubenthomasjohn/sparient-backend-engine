@@ -1,9 +1,12 @@
 region      = "us-east-2"
 name_prefix = "sparient-dev"
 
-# Single S3 bucket (4 prefixes inside). Must exist before first apply.
-# Import: terraform import aws_s3_bucket.main sparient-remediation-testing
-s3_bucket = "sparient-remediation-testing"
+# S3 buckets are per-institution (sparient-<institutionId>), created dynamically.
+# No global bucket variable needed.
+
+# Concurrency caps
+discovery_max_concurrency = 5
+api_provisioned_concurrency = 0
 
 # CI/CD
 github_repo_name = "sparient-backend-engine"

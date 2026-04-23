@@ -21,7 +21,6 @@ const configSchema = z.object({
     accessKeyId: z.string().optional(),
     secretAccessKey: z.string().optional(),
     region: z.string().default("us-east-1"),
-    s3Bucket: z.string().min(1, "S3_BUCKET is required"),
     courseWorkflowArn: z.string().optional(),
   }),
   jobs: z.object({
@@ -31,6 +30,7 @@ const configSchema = z.object({
   // Local dev can leave these unset — the consumers are started by server.ts.
   queue: z.object({
     discoveryUrl: z.string().optional(),
+    responsesQueueArn: z.string().optional(),
     startConsumers: z.coerce.boolean().default(true),
   }),
 });
@@ -48,7 +48,6 @@ const parsed = configSchema.safeParse({
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
     region: process.env.AWS_REGION,
-    s3Bucket: process.env.S3_BUCKET,
     courseWorkflowArn: process.env.COURSE_WORKFLOW_ARN,
   },
   jobs: {
@@ -56,6 +55,7 @@ const parsed = configSchema.safeParse({
   },
   queue: {
     discoveryUrl: process.env.SQS_DISCOVERY_URL,
+    responsesQueueArn: process.env.SQS_RESPONSES_QUEUE_ARN,
     startConsumers: process.env.QUEUE_START_CONSUMERS,
   },
 });

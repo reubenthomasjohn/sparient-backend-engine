@@ -1,8 +1,16 @@
 # TODO
 
-## HIGH PRIORITY: Make S3 bucket name configurable per environment
+## Institution registration API endpoint
 
-Currently hardcoded to `sparient-remediation-testing` (in `src/config/s3Prefixes.ts` comment and `terraform/envs/dev/terraform.tfvars`). For prod, this needs to be a per-environment variable. The 4 prefixes (`connectivo-incoming/`, `connectivo-remediated/`, `sparient-remediation-requests/`, `sparient-remediation-responses/`) are code constants in `src/config/s3Prefixes.ts`. The bucket name comes from `S3_BUCKET` env var.
+Add `POST /api/v1/institutions` — creates an institution record + provisions its S3 bucket. Currently institutions are only created via `npm run db:seed`.
+
+**What's needed:**
+- Accept: `{ name, slug, sourceType, credentials: { domain, account_id, api_token }, syncTime?, writebackOptIn? }`
+- Validate: slug uniqueness, credential format
+- Create the institution row in DB
+- Call `provisionInstitutionBucket(institutionId)` to create + configure the S3 bucket
+- Return the institution record + bucket name
+- Error rollback: if bucket creation fails after DB insert, delete the institution row (or mark it as `provisioning_failed`)
 
 ## Sync status API endpoint
 

@@ -4,8 +4,6 @@ import { SourceRegistry } from '../../services/sources/SourceRegistry';
 import { s3Service } from '../../services/storage/S3Service';
 import { computeFailureUpdate } from '../../utils/failure';
 import { logger } from '../../utils/logger';
-import { config } from '../../config';
-
 export async function handleUploadJob(job: UploadJob): Promise<void> {
   const row = await prisma.sourceFile.findUnique({
     where: { id: job.sourceFileId },
@@ -88,7 +86,7 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
 
   try {
     const stream = await sourceClient.downloadFileStream(fresh.downloadUrl);
-    await s3Service.uploadSourceFileStream(s3Key, stream, fresh.mimeType);
+    await s3Service.uploadSourceFileStream(job.s3Bucket, s3Key, stream, fresh.mimeType);
 
     // Strictly monotonic update — if a parallel worker with a newer modifiedAt already
     // advanced s3_source_modified_at, this no-ops rather than regressing the pointer.
@@ -102,7 +100,7 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
       },
       data: {
         s3SourceKey: s3Key,
-        s3SourceBucket: config.aws.s3Bucket,
+        s3SourceBucket: job.s3Bucket,
         s3SourceModifiedAt: fresh.modifiedAt,
       },
     });

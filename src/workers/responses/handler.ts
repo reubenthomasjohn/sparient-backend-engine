@@ -1,13 +1,15 @@
+import prisma from '../../db/client';
 import { s3Service } from '../../services/storage/S3Service';
 import { RemediationService } from '../../services/remediation/RemediationService';
 import { connectivoResultsSchema } from '../../types/connectivo';
+import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 
 const remediationService = new RemediationService();
 
 export interface ResponseJob {
-  prefix: string;
-  key: string;    // key WITHOUT the prefix (e.g. <instId>/<courseId>/<batchId>.json)
+  bucket: string;    // the actual S3 bucket name (from the S3 event)
+  key: string;       // key WITHOUT the responses prefix
 }
 
 export async function handleResponseJob(job: ResponseJob): Promise<void> {
@@ -17,8 +19,8 @@ export async function handleResponseJob(job: ResponseJob): Promise<void> {
     return;
   }
 
-  logger.info('Responses: fetching response.json', { prefix: job.prefix, key: job.key, batchId });
-  const raw = await s3Service.getJson<unknown>(job.prefix, job.key);
+  logger.info('Responses: fetching response.json', { bucket: job.bucket, key: job.key, batchId });
+  const raw = await s3Service.getJson<unknown>(job.bucket, S3_PREFIX.RESPONSES, job.key);
 
   const result = connectivoResultsSchema.safeParse(raw);
   if (!result.success) {

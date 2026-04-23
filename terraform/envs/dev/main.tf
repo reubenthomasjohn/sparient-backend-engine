@@ -29,20 +29,9 @@ module "queues" {
   name_prefix = var.name_prefix
 }
 
-# --- S3 bucket (single bucket, 4 prefixes) ---
-# Bucket already exists (created manually). Import into state if needed:
-#   terraform import aws_s3_bucket.main sparient-remediation-testing
-resource "aws_s3_bucket" "main" {
-  bucket = var.s3_bucket
-}
-
-resource "aws_s3_bucket_public_access_block" "main" {
-  bucket                  = aws_s3_bucket.main.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
+# S3 buckets are per-institution, created dynamically by InstitutionBucketService.
+# No Terraform-managed bucket resource — Lambdas have IAM access to sparient-* buckets.
+# The InstitutionBucketService configures S3 event notifications at bucket creation time.
 
 # --- Responses SQS queue (S3 event → SQS → responses Lambda) ---
 resource "aws_sqs_queue" "responses_dlq" {
@@ -59,6 +48,8 @@ resource "aws_sqs_queue" "responses" {
   })
 }
 
+# S3 → SQS policy: allow ANY sparient-* bucket to send notifications to the responses queue.
+# Per-institution buckets are created dynamically, so the policy uses a wildcard condition.
 data "aws_iam_policy_document" "allow_s3_to_sqs" {
   statement {
     actions   = ["sqs:SendMessage"]
@@ -68,9 +59,9 @@ data "aws_iam_policy_document" "allow_s3_to_sqs" {
       identifiers = ["s3.amazonaws.com"]
     }
     condition {
-      test     = "ArnEquals"
+      test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = [aws_s3_bucket.main.arn]
+      values   = ["arn:aws:s3:::sparient-*"]
     }
   }
 }
@@ -78,17 +69,6 @@ data "aws_iam_policy_document" "allow_s3_to_sqs" {
 resource "aws_sqs_queue_policy" "allow_s3" {
   queue_url = aws_sqs_queue.responses.id
   policy    = data.aws_iam_policy_document.allow_s3_to_sqs.json
-}
-
-resource "aws_s3_bucket_notification" "responses" {
-  bucket = aws_s3_bucket.main.id
-  queue {
-    queue_arn     = aws_sqs_queue.responses.arn
-    events        = ["s3:ObjectCreated:*"]
-    filter_prefix = "sparient-remediation-responses/"
-    filter_suffix = ".json"
-  }
-  depends_on = [aws_sqs_queue_policy.allow_s3]
 }
 
 # --- Shared Lambda execution role ---
@@ -127,11 +107,15 @@ data "aws_iam_policy_document" "lambda_runtime" {
   # S3
   statement {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = ["${aws_s3_bucket.main.arn}/*"]
+    resources = ["arn:aws:s3:::sparient-*/*"]
   }
   statement {
     actions   = ["s3:ListBucket"]
-    resources = [aws_s3_bucket.main.arn]
+    resources = ["arn:aws:s3:::sparient-*"]
+  }
+  statement {
+    actions   = ["s3:CreateBucket", "s3:PutBucketNotificationConfiguration", "s3:PutBucketPublicAccessBlock"]
+    resources = ["arn:aws:s3:::sparient-*"]
   }
 
   # Step Functions — discovery Lambda needs to start executions
@@ -152,8 +136,8 @@ locals {
     NODE_ENV                            = "production"
     AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     DATABASE_URL                        = neon_project.this.connection_uri
-    S3_BUCKET                           = aws_s3_bucket.main.id
     SQS_DISCOVERY_URL                   = module.queues.discovery_queue_url
+    SQS_RESPONSES_QUEUE_ARN             = aws_sqs_queue.responses.arn
     QUEUE_START_CONSUMERS               = "false"
   }
 }
@@ -282,6 +266,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
         }
         ResultSelector = {
           "institutionId.$" = "$.Payload.institutionId"
+          "s3Bucket.$"      = "$.Payload.s3Bucket"
           "force.$"         = "$.Payload.force"
           "courses.$"       = "$.Payload.courses"
         }
@@ -297,6 +282,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
         ResultPath     = "$.courseResults"
         ItemSelector = {
           "institutionId.$"  = "$.context.institutionId"
+          "s3Bucket.$"       = "$.context.s3Bucket"
           "force.$"          = "$.context.force"
           "canvasCourseId.$" = "$$.Map.Item.Value.canvasCourseId"
           "courseId.$"        = "$$.Map.Item.Value.courseId"
@@ -315,6 +301,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
                 Payload = {
                   "step"             = "discover-files"
                   "institutionId.$"  = "$.institutionId"
+                  "s3Bucket.$"       = "$.s3Bucket"
                   "canvasCourseId.$" = "$.canvasCourseId"
                   "courseId.$"       = "$.courseId"
                   "force.$"         = "$.force"
@@ -325,6 +312,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
                 "hasWork.$"        = "$.Payload.hasWork"
                 "isInitialSync.$"  = "$.Payload.isInitialSync"
                 "fileIds.$"        = "$.Payload.fileIds"
+                "s3Bucket.$"       = "$.Payload.s3Bucket"
               }
               Next = "CheckHasWork"
             }
@@ -353,6 +341,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
               ResultPath     = "$.uploadResults"
               ItemSelector = {
                 "sourceFileId.$" = "$$.Map.Item.Value"
+                "s3Bucket.$"     = "$.discovery.s3Bucket"
               }
               ItemProcessor = {
                 ProcessorConfig = { Mode = "INLINE" }
@@ -366,6 +355,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
                       Payload = {
                         "step"           = "upload-file"
                         "sourceFileId.$" = "$.sourceFileId"
+                        "s3Bucket.$"     = "$.s3Bucket"
                       }
                     }
                     ResultSelector = {
@@ -404,6 +394,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
                 Payload = {
                   "step"             = "batch-publish"
                   "institutionId.$"  = "$.institutionId"
+                  "s3Bucket.$"       = "$.s3Bucket"
                   "canvasCourseId.$" = "$.canvasCourseId"
                   "courseId.$"       = "$.courseId"
                   "isInitialSync.$"  = "$.discovery.isInitialSync"
