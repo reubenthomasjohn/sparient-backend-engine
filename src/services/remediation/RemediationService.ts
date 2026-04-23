@@ -1,6 +1,6 @@
 import { BatchStatus, ConnectivoFileState, QualityLabel } from '@prisma/client';
 import prisma from '../../db/client';
-import { ConnectivoResultsPayload } from '../../types/connectivo';
+import { ConnectivoResultsPayload, ConnectivoFileResult } from '../../types/connectivo';
 import { logger } from '../../utils/logger';
 import { Errors } from '../../utils/errors';
 import { computeFailureUpdate } from '../../utils/failure';
@@ -12,16 +12,16 @@ const STATE_MAP: Record<string, ConnectivoFileState> = {
 };
 
 const QUALITY_MAP: Record<string, QualityLabel> = {
-  A: 'A',
-  AA: 'AA',
-  AAA: 'AAA',
+  Excellent: 'Excellent',
+  Good: 'Good',
+  RequiresReview: 'RequiresReview',
+  Failed: 'Failed',
+  Unchanged: 'Unchanged',
 };
 
 const TERMINAL_BATCH_STATUSES: BatchStatus[] = ['completed', 'completed_with_warnings', 'failed'];
 
 export class RemediationService {
-  // Called by the responses Lambda after fetching response.json from S3. The S3 path
-  // (which contains our batchId) is the matching key — institution scoping is implicit.
   async handleResults(batchId: string, payload: ConnectivoResultsPayload): Promise<void> {
     const batch = await prisma.batch.findUnique({
       where: { id: batchId },
@@ -30,8 +30,6 @@ export class RemediationService {
 
     if (!batch) throw Errors.notFound('Batch');
 
-    // Idempotent re-delivery (S3 events can fire twice; Connectivo can re-write).
-    // A second response for an already-terminal batch is a no-op.
     if (TERMINAL_BATCH_STATUSES.includes(batch.status)) {
       logger.info('RemediationService: batch already terminal, ignoring re-delivery', { batchId });
       return;
@@ -42,15 +40,19 @@ export class RemediationService {
       connectivoBatchId: payload.batch.id,
     });
 
-    const fileResultMap = new Map(
-      payload.folders.flatMap((folder) => folder.files.map((f) => [f.file_id, f])),
-    );
+    // Match response files to our batch_files via custom_fields.file_id (our sourceFileId).
+    const fileResultMap = new Map<string, ConnectivoFileResult>();
+    for (const folder of payload.folders) {
+      for (const file of folder.files) {
+        const fileId = file.custom_fields?.file_id;
+        if (fileId) fileResultMap.set(fileId, file);
+      }
+    }
 
     await prisma.$transaction(async (tx) => {
       for (const batchFile of batch.batchFiles) {
         const result = fileResultMap.get(batchFile.sourceFileId);
 
-        // Missing from response — mark failed rather than leave stuck in-flight.
         if (!result) {
           const reason = 'Missing from Connectivo response';
           await tx.batchFile.update({
@@ -63,7 +65,7 @@ export class RemediationService {
         }
 
         const connectivoState = STATE_MAP[result.state] ?? 'failed';
-        const qualityLabel = result.quality_label ? QUALITY_MAP[result.quality_label] : null;
+        const qualityLabel = result.quality_label ? (QUALITY_MAP[result.quality_label] ?? null) : null;
         const remediatedS3Key = result.remediated_path ?? null;
 
         await tx.batchFile.update({
@@ -75,27 +77,30 @@ export class RemediationService {
             remediatedS3Bucket: remediatedS3Key ? batch.requestS3Bucket : null,
             totalPages: result.total_pages,
             processingTimeSecs: result.processing_time_seconds,
-            verapdfErrors: result.verapdf_errors,
-            verapdfWarnings: result.verapdf_warnings,
-            errorMessage: result.error,
+            complianceErrors: result.compliance_errors,
+            complianceWarnings: result.compliance_warnings,
+            totalIssuesFound: result.total_issues_found,
+            totalIssuesFixed: result.total_issues_fixed,
+            errorMessage: result.error ?? null,
           },
         });
 
-        if (Object.keys(result.issues_by_category).length > 0) {
+        // Store issue categories + individual issue details (as JSON).
+        const categories = result.issues_by_category;
+        if (categories && Object.keys(categories).length > 0) {
           await tx.fileIssueCategory.createMany({
-            data: Object.entries(result.issues_by_category).map(([category, counts]) => ({
+            data: Object.entries(categories).map(([category, data]) => ({
               batchFileId: batchFile.id,
               category,
-              found: counts.found,
-              fixed: counts.fixed,
-              remaining: counts.remaining,
+              found: data.found,
+              fixed: data.fixed,
+              remaining: data.remaining,
+              issues: data.issues ?? [],
             })),
           });
         }
 
         // Guard: only write the outcome if the file hasn't been claimed by a newer batch.
-        // If batchedModifiedAt has advanced past this batch's version, a newer cycle owns the
-        // file — skip the source_file update so we don't overwrite in-flight state.
         if (connectivoState === 'completed') {
           await tx.sourceFile.updateMany({
             where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
@@ -126,8 +131,6 @@ export class RemediationService {
             ? 'completed_with_warnings'
             : 'completed';
 
-      // Clamp completed_at to now — Connectivo clock skew would otherwise produce
-      // future-dated timestamps that break "completed in the last hour" queries.
       const connectivoCompletedAt = new Date(payload.batch.completed_at).getTime();
       const completedAt = new Date(Math.min(Date.now(), connectivoCompletedAt));
 

@@ -1,325 +1,42 @@
 {
-  "connectivo_version": "1.1.0",
-  "generated_at": "2026-04-23T03:05:06.665195+00:00",
+  "connectivo_version": "1.0.0",
+  "generated_at": "2026-04-22T20:03:01.785135+00:00",
   "batch": {
-    "id": "83d8aae5-0ac0-48da-994a-8af07ec623df",
-    "external_batch_id": "04232026_batch_4",
-    "connection_id": "4dca336a-0006-4a42-91ce-fe5358f4c4ed",
+    "id": "d287fa8a-72d2-44e9-9249-c6b7ba8873b9",
+    "external_batch_id": "6812ff34-a9f7-4181-8965-0d1cc3cb0d6d",
+    "connection_id": "c7f7d6c9-d766-48e9-9e5c-fc41fb8eedef",
     "state": "Completed",
-    "submitted_at": "04/23/2026T01:26:32Z",
-    "started_at": "2026-04-23T03:02:33.383Z",
-    "completed_at": "2026-04-23T03:05:06.663538+00:00",
-    "duration_seconds": 153,
+    "submitted_at": "2026-04-22T18:39:28.842Z",
+    "started_at": "2026-04-22T20:03:01.473Z",
+    "completed_at": "2026-04-22T20:03:01.784730+00:00",
+    "duration_seconds": 0,
     "summary": {
-      "total_folders": 5,
-      "total_files": 5,
-      "total_pages": 52,
-      "succeeded": 5,
+      "total_folders": 1,
+      "total_files": 1,
+      "total_pages": 5,
+      "succeeded": 1,
       "failed": 0,
       "requires_review": 0,
       "skipped": 0,
       "quality_breakdown": {
-        "excellent": 3,
-        "good": 2,
+        "excellent": 1,
+        "good": 0,
         "requires_review": 0,
         "failed": 0,
         "unchanged": 0
       },
-      "total_processing_time_seconds": 267,
-      "total_issues_found": 19,
-      "total_issues_fixed": 19
+      "total_processing_time_seconds": 0,
+      "total_issues_found": 6,
+      "total_issues_fixed": 6
     }
   },
   "folders": [
     {
-      "path": "POC/Original Documents/fall-2022-mktg-443-01-12292-export/web_resources",
-      "export_path": "/POC/RemediatedDocs",
+      "path": "accesshub-remediation-storage/connectivo-incoming/55f270c2-ca56-4847-abc8-f39adb783662/116/",
+      "export_path": "/accesshub-remediation-storage/connectivo-remediated/connectivo-incoming/55f270c2-ca56-4847-abc8-f39adb783662/116",
       "summary": {
         "total_files": 1,
-        "total_pages": 7,
-        "succeeded": 1,
-        "failed": 0,
-        "requires_review": 0,
-        "skipped": 0,
-        "quality_breakdown": {
-          "excellent": 1,
-          "good": 0,
-          "requires_review": 0,
-          "failed": 0,
-          "unchanged": 0
-        },
-        "total_processing_time_seconds": 0,
-        "total_issues_found": 8,
-        "total_issues_fixed": 8
-      },
-      "files": [
-        {
-          "file_name": "Tone Analyzer Sample.pptx",
-          "file_type": "pptx",
-          "source_path": "POC/Original Documents/fall-2022-mktg-443-01-12292-export/web_resources/Tone Analyzer Sample.pptx",
-          "remediated_path": "/POC/RemediatedDocs/Tone Analyzer Sample.pptx",
-          "custom_fields": {
-            "DocumentLibrary": "Original Documents",
-            "docID": 304,
-            "refID": 111372
-          },
-          "quality_label": "Excellent",
-          "state": "Completed",
-          "total_pages": 7,
-          "processing_time_seconds": 0,
-          "compliance_errors": 0,
-          "compliance_warnings": 0,
-          "total_issues_found": 8,
-          "total_issues_fixed": 8,
-          "issues_by_category": [
-            {
-              "issue_category": "Metadata",
-              "fixed": 3,
-              "found": 3,
-              "remaining": 0,
-              "issues": [
-                {
-                  "name": "Document language is set in document properties",
-                  "status": "fixed",
-                  "detail": "Language set to 'en-US'"
-                },
-                {
-                  "name": "Document has a title in document properties",
-                  "status": "fixed",
-                  "detail": "Title set to 'Tone Analysis - Orange County Pizza Restaurants'"
-                },
-                {
-                  "name": "Document author is set",
-                  "status": "fixed",
-                  "detail": "Author set to 'MKTG 443-01 Group 5'"
-                }
-              ]
-            },
-            {
-              "issue_category": "Structure",
-              "fixed": 2,
-              "found": 2,
-              "remaining": 0,
-              "issues": [
-                {
-                  "name": "Every slide has a title placeholder with text (PPTX)",
-                  "status": "fixed",
-                  "detail": "All 7 slides have titles"
-                },
-                {
-                  "name": "No two slides share the same title text (PPTX)",
-                  "status": "fixed",
-                  "detail": "All 7 slide titles are unique"
-                }
-              ]
-            },
-            {
-              "issue_category": "Images & Figures",
-              "fixed": 3,
-              "found": 3,
-              "remaining": 0,
-              "issues": [
-                {
-                  "name": "Every non-decorative image has alt text",
-                  "status": "fixed",
-                  "detail": "All 7 images have alt text or are marked decorative"
-                },
-                {
-                  "name": "Alt text is meaningful (not 'image1.png', 'photo', 'chart')",
-                  "status": "fixed",
-                  "detail": "All image alt texts are meaningful"
-                },
-                {
-                  "name": "Decorative images are explicitly marked decorative",
-                  "status": "fixed",
-                  "detail": "Decorative flags are consistent with alt text"
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "POC/Original Documents/fall-2023-mktg-443-01-12332",
-      "export_path": "/POC/RemediatedDocs",
-      "summary": {
-        "total_files": 1,
-        "total_pages": 18,
-        "succeeded": 1,
-        "failed": 0,
-        "requires_review": 0,
-        "skipped": 0,
-        "quality_breakdown": {
-          "excellent": 0,
-          "good": 1,
-          "requires_review": 0,
-          "failed": 0,
-          "unchanged": 0
-        },
-        "total_processing_time_seconds": 145,
-        "total_issues_found": 0,
-        "total_issues_fixed": 0
-      },
-      "files": [
-        {
-          "file_name": "Group 5.pdf",
-          "file_type": "pdf",
-          "source_path": "POC/Original Documents/fall-2023-mktg-443-01-12332/Group 5.pdf",
-          "remediated_path": "/POC/RemediatedDocs/Group 5.pdf",
-          "custom_fields": {
-            "DocumentLibrary": "Original Documents",
-            "docID": 203,
-            "refID": 111376
-          },
-          "quality_label": "Good",
-          "state": "Completed",
-          "total_pages": 18,
-          "processing_time_seconds": 145,
-          "compliance_errors": 0,
-          "compliance_warnings": 0,
-          "total_issues_found": 0,
-          "total_issues_fixed": 0,
-          "issues_by_category": []
-        }
-      ]
-    },
-    {
-      "path": "POC/Original Documents/spring-2022-mktg-443-01-12544",
-      "export_path": "/POC/RemediatedDocs",
-      "summary": {
-        "total_files": 1,
-        "total_pages": 22,
-        "succeeded": 1,
-        "failed": 0,
-        "requires_review": 0,
-        "skipped": 0,
-        "quality_breakdown": {
-          "excellent": 0,
-          "good": 1,
-          "requires_review": 0,
-          "failed": 0,
-          "unchanged": 0
-        },
-        "total_processing_time_seconds": 121,
-        "total_issues_found": 0,
-        "total_issues_fixed": 0
-      },
-      "files": [
-        {
-          "file_name": "Group1.pdf",
-          "file_type": "pdf",
-          "source_path": "POC/Original Documents/spring-2022-mktg-443-01-12544/Group1.pdf",
-          "remediated_path": "/POC/RemediatedDocs/Group1.pdf",
-          "custom_fields": {
-            "DocumentLibrary": "Original Documents",
-            "docID": 705,
-            "refID": 111373
-          },
-          "quality_label": "Good",
-          "state": "Completed",
-          "total_pages": 22,
-          "processing_time_seconds": 121,
-          "compliance_errors": 0,
-          "compliance_warnings": 0,
-          "total_issues_found": 0,
-          "total_issues_fixed": 0,
-          "issues_by_category": []
-        }
-      ]
-    },
-    {
-      "path": "POC/Original Documents/spring-2022-mktg-443-01-12544/Uploaded Media",
-      "export_path": "/POC/RemediatedDocs",
-      "summary": {
-        "total_files": 1,
-        "total_pages": 1,
-        "succeeded": 1,
-        "failed": 0,
-        "requires_review": 0,
-        "skipped": 0,
-        "quality_breakdown": {
-          "excellent": 1,
-          "good": 0,
-          "requires_review": 0,
-          "failed": 0,
-          "unchanged": 0
-        },
-        "total_processing_time_seconds": 0,
-        "total_issues_found": 5,
-        "total_issues_fixed": 5
-      },
-      "files": [
-        {
-          "file_name": "Video Analysis Homework.docx",
-          "file_type": "docx",
-          "source_path": "POC/Original Documents/spring-2022-mktg-443-01-12544/Uploaded Media/Video Analysis Homework.docx",
-          "remediated_path": "/POC/RemediatedDocs/Video Analysis Homework.docx",
-          "custom_fields": {
-            "DocumentLibrary": "Original Documents",
-            "docID": 756,
-            "refID": 111374
-          },
-          "quality_label": "Excellent",
-          "state": "Completed",
-          "total_pages": 1,
-          "processing_time_seconds": 0,
-          "compliance_errors": 0,
-          "compliance_warnings": 0,
-          "total_issues_found": 5,
-          "total_issues_fixed": 5,
-          "issues_by_category": [
-            {
-              "issue_category": "Metadata",
-              "fixed": 3,
-              "found": 3,
-              "remaining": 0,
-              "issues": [
-                {
-                  "name": "Document language is set in document properties",
-                  "status": "fixed",
-                  "detail": "Language set to 'en-US'"
-                },
-                {
-                  "name": "Document has a title in document properties",
-                  "status": "fixed",
-                  "detail": "Title set to 'Video Analysis Homework'"
-                },
-                {
-                  "name": "Document author is set",
-                  "status": "fixed",
-                  "detail": "Author set to 'Content Author'"
-                }
-              ]
-            },
-            {
-              "issue_category": "Structure",
-              "fixed": 2,
-              "found": 2,
-              "remaining": 0,
-              "issues": [
-                {
-                  "name": "Heading hierarchy starts at H1",
-                  "status": "fixed",
-                  "detail": "First heading is H1"
-                },
-                {
-                  "name": "Heading text is descriptive (not 'Section 1' or 'Untitled')",
-                  "status": "fixed",
-                  "detail": "All 1 headings have descriptive text"
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "POC/Original Documents/summer-2022-mktg-351-50-10214",
-      "export_path": "/POC/RemediatedDocs",
-      "summary": {
-        "total_files": 1,
-        "total_pages": 4,
+        "total_pages": 5,
         "succeeded": 1,
         "failed": 0,
         "requires_review": 0,
@@ -337,28 +54,26 @@
       },
       "files": [
         {
-          "file_name": "Lesson 05.pptx",
+          "file_name": "931/v-1776812097000/Chaffey_College_Clean_Presentation.pptx",
           "file_type": "pptx",
-          "source_path": "POC/Original Documents/summer-2022-mktg-351-50-10214/Lesson 05.pptx",
-          "remediated_path": "/POC/RemediatedDocs/Lesson 05.pptx",
+          "source_path": "accesshub-remediation-storage/connectivo-incoming/55f270c2-ca56-4847-abc8-f39adb783662/116/931/v-1776812097000/Chaffey_College_Clean_Presentation.pptx",
+          "remediated_path": "/accesshub-remediation-storage/connectivo-remediated/connectivo-incoming/55f270c2-ca56-4847-abc8-f39adb783662/116/931/v-1776812097000/Chaffey_College_Clean_Presentation.pptx",
           "custom_fields": {
-            "DocumentLibrary": "Original Documents",
-            "docID": 575,
-            "refID": 111375
+            "canvas_file_id": "931",
+            "file_id": "947753e1-2bfb-437a-9e54-b7a96a066393"
           },
           "quality_label": "Excellent",
           "state": "Completed",
-          "total_pages": 4,
+          "total_pages": 5,
           "processing_time_seconds": 0,
           "compliance_errors": 0,
           "compliance_warnings": 0,
           "total_issues_found": 6,
           "total_issues_fixed": 6,
-          "issues_by_category": [
-            {
-              "issue_category": "Metadata",
-              "fixed": 3,
+          "issues_by_category": {
+            "Metadata": {
               "found": 3,
+              "fixed": 3,
               "remaining": 0,
               "issues": [
                 {
@@ -369,7 +84,7 @@
                 {
                   "name": "Document has a title in document properties",
                   "status": "fixed",
-                  "detail": "Title set to 'Developing a Global Vision'"
+                  "detail": "Title set to 'Chaffey College Overview Presentation'"
                 },
                 {
                   "name": "Document author is set",
@@ -378,28 +93,26 @@
                 }
               ]
             },
-            {
-              "issue_category": "Structure",
-              "fixed": 2,
+            "Structure": {
               "found": 2,
+              "fixed": 2,
               "remaining": 0,
               "issues": [
                 {
                   "name": "Every slide has a title placeholder with text (PPTX)",
                   "status": "fixed",
-                  "detail": "All 4 slides have titles"
+                  "detail": "All 5 slides have titles"
                 },
                 {
                   "name": "No two slides share the same title text (PPTX)",
                   "status": "fixed",
-                  "detail": "All 4 slide titles are unique"
+                  "detail": "All 5 slide titles are unique"
                 }
               ]
             },
-            {
-              "issue_category": "Tables",
-              "fixed": 1,
+            "Tables": {
               "found": 1,
+              "fixed": 1,
               "remaining": 0,
               "issues": [
                 {
@@ -409,7 +122,7 @@
                 }
               ]
             }
-          ]
+          }
         }
       ]
     }

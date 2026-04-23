@@ -38,9 +38,11 @@ enum BatchStatus {
 }
 
 enum QualityLabel {
-  A
-  AA
-  AAA
+  Excellent
+  Good
+  RequiresReview  @map("requires_review")
+  Failed          @map("quality_failed")
+  Unchanged
 }
 
 enum ConnectivoFileState {
@@ -190,11 +192,13 @@ model BatchFile {
   qualityLabel       QualityLabel?        @map("quality_label")
   remediatedS3Key    String?              @map("remediated_s3_key") @db.VarChar(1000)
   remediatedS3Bucket String?              @map("remediated_s3_bucket") @db.VarChar(255)
-  totalPages         Int?                 @map("total_pages")
-  processingTimeSecs Int?                 @map("processing_time_seconds")
-  verapdfErrors      Int?                 @map("verapdf_errors")
-  verapdfWarnings    Int?                 @map("verapdf_warnings")
-  errorMessage       String?              @map("error_message")
+  totalPages           Int?                 @map("total_pages")
+  processingTimeSecs   Int?                 @map("processing_time_seconds")
+  complianceErrors     Int?                 @map("compliance_errors")
+  complianceWarnings   Int?                 @map("compliance_warnings")
+  totalIssuesFound     Int?                 @map("total_issues_found")
+  totalIssuesFixed     Int?                 @map("total_issues_fixed")
+  errorMessage         String?              @map("error_message")
   createdAt          DateTime             @default(now()) @map("created_at")
   updatedAt          DateTime             @updatedAt @map("updated_at")
 
@@ -214,9 +218,11 @@ model FileIssueCategory {
   found       Int    @default(0)
   fixed       Int    @default(0)
   remaining   Int    @default(0)
+  issues      Json   @default("[]") // Array of { name, status, detail }
 
   batchFile BatchFile @relation(fields: [batchFileId], references: [id])
 
+  @@index([batchFileId])
   @@map("file_issue_categories")
 }
 
