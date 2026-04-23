@@ -36,12 +36,6 @@ Manual Trigger / EventBridge (tick every 15 min)
 
 See `docs/ARCHITECTURE.md` for the full deployment diagram, fan-out details, and cost breakdown.
 
-## Access Hub API — tenant and scope
-
-Routes under `/api/v1/access-hub` require HTTP Basic auth (see `.env.example`). Institution-scoped paths use `institution_id` (UUID); course-scoped paths add `canvas_course_id`.
-
-**Policy (TASK-02 / VALIDATION-02):** Invalid UUID for `institution_id` returns **400**. Unknown institution, unknown course for that institution, or no database row for the `(institution_id, canvas_course_id)` pair returns **404** with a generic **`Resource not found`** body (same message and code in all cases so responses do not reveal whether an institution or course exists). Course resolution always uses the composite unique key, so a Canvas course that exists only under another tenant is treated like a missing course.
-
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) v20+
@@ -133,10 +127,6 @@ InMemoryQueue(discovery): consumer started
 InMemoryQueue(upload): consumer started
 Server listening on port 3000
 ```
-
-### API docs (Swagger UI)
-
-Interactive OpenAPI documentation is served at **`/api/docs`** (no authentication). The machine-readable spec lives at **`docs/openapi.json`**. Extend that file when you add routes; details and payload rules remain in **`spec/TECHNICAL_SPECIFICATION.md`**.
 
 ---
 
