@@ -28,7 +28,6 @@ const SUPPORTED_MIME_TYPES = [
   "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.ms-excel",
-  "image/webp",
 ];
 
 const SUPPORTED_EXTENSIONS = new Set([
