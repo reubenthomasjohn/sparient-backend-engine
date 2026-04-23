@@ -1,10 +1,10 @@
-import axios from 'axios';
-import { Readable } from 'stream';
-import { Institution } from '@prisma/client';
-import { CanvasClient } from './CanvasClient';
-import { CanvasFileReplacer } from './CanvasFileReplacer';
-import { toDiscoveredFile } from './mappers';
-import { ISourceClient } from '../ISourceClient';
+import axios from "axios";
+import { Readable } from "stream";
+import { Institution } from "@prisma/client";
+import { CanvasClient } from "./CanvasClient";
+import { CanvasFileReplacer } from "./CanvasFileReplacer";
+import { toDiscoveredFile } from "./mappers";
+import { ISourceClient } from "../ISourceClient";
 import {
   DiscoveredCourse,
   DiscoveredFile,
@@ -13,30 +13,33 @@ import {
   ReplaceResult,
   SupersedeFileParams,
   UploadNewFileParams,
-} from '../../../types/source';
-import { CanvasCourse, CanvasFile, CanvasTerm } from '../../../types/canvas';
-import { logger } from '../../../utils/logger';
+} from "../../../types/source";
+import { CanvasCourse, CanvasFile, CanvasTerm } from "../../../types/canvas";
+import { logger } from "../../../utils/logger";
 
 // Used as a server-side filter on the Canvas API request to reduce response size.
 // Canvas doesn't always assign correct MIME types, so we also check extensions
 // client-side below to catch files served as application/octet-stream etc.
 const SUPPORTED_MIME_TYPES = [
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-excel',
-  'image/webp',
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "image/webp",
 ];
 
 const SUPPORTED_EXTENSIONS = new Set([
-  '.pdf',
-  '.doc', '.docx',
-  '.ppt', '.pptx',
-  '.xls', '.xlsx',
-  '.webp',
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+  // '.webp',
 ]);
 
 function isActiveTerm(term: CanvasTerm, now: Date): boolean {
@@ -45,10 +48,10 @@ function isActiveTerm(term: CanvasTerm, now: Date): boolean {
   return true;
 }
 
-function isSupportedFile(file: Pick<CanvasFile, 'filename'>): boolean {
-  const parts = file.filename.split('.');
+function isSupportedFile(file: Pick<CanvasFile, "filename">): boolean {
+  const parts = file.filename.split(".");
   if (parts.length < 2) return false;
-  const ext = '.' + parts.pop()!.toLowerCase();
+  const ext = "." + parts.pop()!.toLowerCase();
   return SUPPORTED_EXTENSIONS.has(ext);
 }
 
@@ -67,22 +70,28 @@ export class CanvasSourceClient implements ISourceClient {
   }
 
   async getCourses(): Promise<DiscoveredCourse[]> {
-    logger.info('Canvas: fetching courses', { accountId: this.client.accountId });
+    logger.info("Canvas: fetching courses", {
+      accountId: this.client.accountId,
+    });
 
     const [canvasCourses, terms] = await Promise.all([
       this.client.getPaginated<CanvasCourse>(
         `/accounts/${this.client.accountId}/courses`,
-        { state: ['available'], enrollment_type: 'teacher' },
+        { state: ["available"], enrollment_type: "teacher" },
       ),
       this.client.getTerms(),
     ]);
 
     const now = new Date();
-    const activeTermIds = new Set(terms.filter((t) => isActiveTerm(t, now)).map((t) => t.id));
+    const activeTermIds = new Set(
+      terms.filter((t) => isActiveTerm(t, now)).map((t) => t.id),
+    );
 
-    const activeCourses = canvasCourses.filter((c) => activeTermIds.has(c.enrollment_term_id));
+    const activeCourses = canvasCourses.filter((c) =>
+      activeTermIds.has(c.enrollment_term_id),
+    );
 
-    logger.info('Canvas: courses fetched', {
+    logger.info("Canvas: courses fetched", {
       total: canvasCourses.length,
       activeTerms: activeTermIds.size,
       afterTermFilter: activeCourses.length,
@@ -96,12 +105,22 @@ export class CanvasSourceClient implements ISourceClient {
     }));
   }
 
-  async getFiles(courseExternalId: string, lastSyncedAt: Date | null): Promise<DiscoveredFile[]> {
-    logger.info('Canvas: fetching files', { courseId: courseExternalId, lastSyncedAt });
+  async getFiles(
+    courseExternalId: string,
+    lastSyncedAt: Date | null,
+  ): Promise<DiscoveredFile[]> {
+    logger.info("Canvas: fetching files", {
+      courseId: courseExternalId,
+      lastSyncedAt,
+    });
 
     const allFiles = await this.client.getPaginated<CanvasFile>(
       `/courses/${courseExternalId}/files`,
-      { sort: 'updated_at', order: 'desc', 'content_types[]': SUPPORTED_MIME_TYPES },
+      {
+        sort: "updated_at",
+        order: "desc",
+        "content_types[]": SUPPORTED_MIME_TYPES,
+      },
     );
 
     const afterDateFilter = lastSyncedAt
@@ -110,7 +129,7 @@ export class CanvasSourceClient implements ISourceClient {
 
     const files = afterDateFilter.filter(isSupportedFile);
 
-    logger.info('Canvas: files after filter', {
+    logger.info("Canvas: files after filter", {
       courseId: courseExternalId,
       raw: allFiles.length,
       kept: files.length,
@@ -119,7 +138,10 @@ export class CanvasSourceClient implements ISourceClient {
     return files.map(toDiscoveredFile);
   }
 
-  async getFile(_courseExternalId: string, fileExternalId: string): Promise<DiscoveredFile | null> {
+  async getFile(
+    _courseExternalId: string,
+    fileExternalId: string,
+  ): Promise<DiscoveredFile | null> {
     try {
       const file = await this.client.getFile(fileExternalId);
       if (!isSupportedFile(file)) return null;
@@ -133,14 +155,20 @@ export class CanvasSourceClient implements ISourceClient {
 
   async downloadFileStream(downloadUrl: string): Promise<Readable> {
     const response = await axios.get<Readable>(downloadUrl, {
-      responseType: 'stream',
+      responseType: "stream",
       timeout: 120_000,
     });
     return response.data;
   }
 
-  isFileEligibleToReplace(fileExternalId: string, knownModifiedAt: Date): Promise<ReplaceEligibility> {
-    return this.replacer.isCanvasFileEligibleToReplace(fileExternalId, knownModifiedAt);
+  isFileEligibleToReplace(
+    fileExternalId: string,
+    knownModifiedAt: Date,
+  ): Promise<ReplaceEligibility> {
+    return this.replacer.isCanvasFileEligibleToReplace(
+      fileExternalId,
+      knownModifiedAt,
+    );
   }
 
   replaceFile(params: ReplaceFileParams): Promise<ReplaceResult> {
