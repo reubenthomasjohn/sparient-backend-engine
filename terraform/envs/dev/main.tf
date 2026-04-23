@@ -107,11 +107,17 @@ data "aws_iam_policy_document" "lambda_runtime" {
   # S3
   statement {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = ["arn:aws:s3:::sparient-*/*"]
+    resources = [
+      "arn:aws:s3:::sparient-*/*",
+      "arn:aws:s3:::accesshub-remediation-storage/*",
+    ]
   }
   statement {
     actions   = ["s3:ListBucket"]
-    resources = ["arn:aws:s3:::sparient-*"]
+    resources = [
+      "arn:aws:s3:::sparient-*",
+      "arn:aws:s3:::accesshub-remediation-storage",
+    ]
   }
   statement {
     actions   = ["s3:CreateBucket", "s3:PutBucketNotificationConfiguration", "s3:PutBucketPublicAccessBlock"]
