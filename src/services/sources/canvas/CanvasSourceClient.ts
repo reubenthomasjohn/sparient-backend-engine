@@ -28,6 +28,7 @@ const SUPPORTED_MIME_TYPES = [
   'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-excel',
+  'image/webp',
 ];
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -35,6 +36,7 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.doc', '.docx',
   '.ppt', '.pptx',
   '.xls', '.xlsx',
+  '.webp',
 ]);
 
 function isActiveTerm(term: CanvasTerm, now: Date): boolean {

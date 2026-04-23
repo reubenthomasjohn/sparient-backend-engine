@@ -40,8 +40,8 @@ function toConnectivoPayload(
 }
 
 export class RequestPublisher {
-  buildKey(canvasCourseId: string, batchId: string): string {
-    return `${canvasCourseId}/${batchId}.json`;
+  buildKey(batchId: string): string {
+    return `${batchId}.json`;
   }
 
   async publish(
@@ -56,7 +56,7 @@ export class RequestPublisher {
       include: { sourceFile: true },
     });
 
-    const key = this.buildKey(course.canvasCourseId, batch.id);
+    const key = this.buildKey(batch.id);
     const payload = toConnectivoPayload(batch, institution, course, batchFiles, s3Bucket, forceReprocess);
 
     await s3Service.putJson(s3Bucket, S3_PREFIX.REQUESTS, key, payload);

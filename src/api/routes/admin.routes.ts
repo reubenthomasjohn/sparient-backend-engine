@@ -16,7 +16,7 @@ router.post(
       if (!institution) throw Errors.notFound('Institution');
 
       const bucket = getBucketName(institutionId, institution.s3Bucket);
-      const key = `${courseId}/${batchId}.json`;
+      const key = `${batchId}.json`;
       await handleResponseJob({ bucket, key });
       res.json({ success: true, processed: { bucket, key } });
     } catch (err) {
