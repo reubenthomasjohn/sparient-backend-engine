@@ -37,7 +37,9 @@ const issueDetailSchema = z.object({
   detail: z.string(),
 });
 
+// v1.1.0 format: array with issue_category field
 const issueCategorySchema = z.object({
+  issue_category: z.string(),
   found: z.number(),
   fixed: z.number(),
   remaining: z.number(),
@@ -61,7 +63,7 @@ const fileResultSchema = z.object({
   compliance_warnings: z.number().default(0),
   total_issues_found: z.number().default(0),
   total_issues_fixed: z.number().default(0),
-  issues_by_category: z.record(z.string(), issueCategorySchema).default({}),
+  issues_by_category: z.array(issueCategorySchema).default([]),
   error: z.string().nullable().optional(),
 });
 

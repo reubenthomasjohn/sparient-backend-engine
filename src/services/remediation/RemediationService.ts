@@ -86,16 +86,15 @@ export class RemediationService {
         });
 
         // Store issue categories + individual issue details (as JSON).
-        const categories = result.issues_by_category;
-        if (categories && Object.keys(categories).length > 0) {
+        if (result.issues_by_category.length > 0) {
           await tx.fileIssueCategory.createMany({
-            data: Object.entries(categories).map(([category, data]) => ({
+            data: result.issues_by_category.map((cat) => ({
               batchFileId: batchFile.id,
-              category,
-              found: data.found,
-              fixed: data.fixed,
-              remaining: data.remaining,
-              issues: data.issues ?? [],
+              category: cat.issue_category,
+              found: cat.found,
+              fixed: cat.fixed,
+              remaining: cat.remaining,
+              issues: cat.issues ?? [],
             })),
           });
         }
