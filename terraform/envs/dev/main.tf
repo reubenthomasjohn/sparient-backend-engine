@@ -61,7 +61,7 @@ data "aws_iam_policy_document" "allow_s3_to_sqs" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:s3:::sparient-*"]
+      values   = ["arn:aws:s3:::sparient-*", "arn:aws:s3:::accesshub-*"]
     }
   }
 }
