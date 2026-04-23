@@ -23,20 +23,20 @@ import { logger } from "../../../utils/logger";
 const SUPPORTED_MIME_TYPES = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/msword",
+  // "application/msword",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "application/vnd.ms-powerpoint",
+  // "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-excel",
+  // "application/vnd.ms-excel",
 ];
 
 const SUPPORTED_EXTENSIONS = new Set([
   ".pdf",
-  ".doc",
+  // ".doc",
   ".docx",
-  ".ppt",
+  // ".ppt",
   ".pptx",
-  ".xls",
+  // ".xls",
   ".xlsx",
   // '.webp',
 ]);
