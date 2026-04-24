@@ -8,35 +8,33 @@ import { logger } from '../../utils/logger';
 const remediationService = new RemediationService();
 
 export interface ResponseJob {
-  bucket: string;    // the actual S3 bucket name (from the S3 event)
+  bucket: string;
   key: string;       // key WITHOUT the responses prefix
 }
 
 export async function handleResponseJob(job: ResponseJob): Promise<void> {
-  const batchId = parseBatchIdFromKey(job.key);
-  if (!batchId) {
-    logger.warn('Responses: skipping unparseable key', { key: job.key });
+  logger.info('Responses: fetching json', { bucket: job.bucket, key: job.key });
+  const raw = await s3Service.getJson<unknown>(job.bucket, S3_PREFIX.RESPONSES, job.key);
+
+  // Validate against the response schema. If it fails, this is likely the echoed
+  // request.json that Connectivo copies into the same prefix — skip silently.
+  const result = connectivoResultsSchema.safeParse(raw);
+  if (!result.success) {
+    logger.info('Responses: skipping non-response file (validation failed)', {
+      key: job.key,
+      firstError: result.error.issues[0]?.message,
+    });
     return;
   }
 
-  logger.info('Responses: fetching response.json', { bucket: job.bucket, key: job.key, batchId });
-  const raw = await s3Service.getJson<unknown>(job.bucket, S3_PREFIX.RESPONSES, job.key);
-
-  const result = connectivoResultsSchema.safeParse(raw);
-  if (!result.success) {
-    logger.error('Responses: invalid response.json', {
-      batchId,
-      key: job.key,
-      errors: result.error.issues,
-    });
-    throw new Error(`Invalid response.json for batch ${batchId}: ${result.error.message}`);
+  // Use external_batch_id from inside the payload (our batch ID) — don't parse from filename.
+  // Connectivo's filename format varies (e.g. <timestamp>_job_completed_<batchId>.json).
+  const batchId = result.data.batch.external_batch_id;
+  if (!batchId) {
+    logger.warn('Responses: no external_batch_id in response', { key: job.key });
+    return;
   }
 
+  logger.info('Responses: processing', { batchId, key: job.key });
   await remediationService.handleResults(batchId, result.data);
-}
-
-function parseBatchIdFromKey(key: string): string | null {
-  const last = key.split('/').pop();
-  if (!last || !last.endsWith('.json')) return null;
-  return last.slice(0, -'.json'.length);
 }
