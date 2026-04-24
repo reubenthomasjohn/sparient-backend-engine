@@ -16,6 +16,7 @@ const QUALITY_MAP: Record<string, QualityLabel> = {
   Excellent: 'Excellent',
   Good: 'Good',
   RequiresReview: 'RequiresReview',
+  'Requires Review': 'RequiresReview',
   Failed: 'Failed',
   Unchanged: 'Unchanged',
 };
