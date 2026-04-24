@@ -129,6 +129,8 @@ model SourceFile {
   maxRetries              Int             @default(3) @map("max_retries")
   nextRetryAt             DateTime?       @map("next_retry_at")
 
+  reviewAcknowledged      Boolean         @default(false) @map("review_acknowledged")
+
   writebackState          WritebackState? @map("writeback_state")
   lastWritebackModifiedAt DateTime?       @map("last_writeback_modified_at")
 
