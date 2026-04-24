@@ -1,5 +1,9 @@
 # TODO
 
+## Review remediated_path stripping logic
+
+`RemediationService` strips `/<bucket>/` from Connectivo's `remediated_path` to get the actual S3 key. This assumes Connectivo always prefixes the path with `/<bucket-name>/`. If their format changes, the stripping regex (`/^\/[^/]+\//`) will break. Consider deriving the remediated key from the source key instead (`${S3_PREFIX.REMEDIATED}/${batchFile.s3SourceKey}`), which doesn't depend on Connectivo's path format at all.
+
 ## Clean up hardcoded S3 bucket in seed script
 
 `prisma/seed.ts` hardcodes `accesshub-remediation-storage` as the institution's S3 bucket and manually configures the S3 event notification. This was a quick-start shortcut. Once the institution registration endpoint exists, remove the hardcoded bucket from the seed and use `provisionInstitutionBucket` (which creates the bucket + configures notifications dynamically).

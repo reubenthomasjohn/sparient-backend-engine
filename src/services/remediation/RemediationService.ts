@@ -1,6 +1,7 @@
 import { BatchStatus, ConnectivoFileState, QualityLabel } from '@prisma/client';
 import prisma from '../../db/client';
 import { ConnectivoResultsPayload, ConnectivoFileResult } from '../../types/connectivo';
+import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 import { Errors } from '../../utils/errors';
 import { computeFailureUpdate } from '../../utils/failure';
@@ -66,7 +67,11 @@ export class RemediationService {
 
         const connectivoState = STATE_MAP[result.state] ?? 'failed';
         const qualityLabel = result.quality_label ? (QUALITY_MAP[result.quality_label] ?? null) : null;
-        const remediatedS3Key = result.remediated_path ?? null;
+        // Connectivo reports remediated_path as "/<bucket>/<key>". Strip leading "/<bucket>/"
+        // to get the actual S3 key. TODO: review this stripping logic if Connectivo changes format.
+        const remediatedS3Key = result.remediated_path
+          ? result.remediated_path.replace(/^\/[^/]+\//, '')
+          : null;
 
         await tx.batchFile.update({
           where: { id: batchFile.id },
