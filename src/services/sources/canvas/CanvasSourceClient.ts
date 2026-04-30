@@ -74,9 +74,12 @@ export class CanvasSourceClient implements ISourceClient {
     });
 
     const [canvasCourses, terms] = await Promise.all([
+      // available = published, unpublished = draft. Both are syncable: teachers
+      // prepping next semester want their files remediated before publish. We
+      // exclude `completed` (past terms) and `deleted`.
       this.client.getPaginated<CanvasCourse>(
         `/accounts/${this.client.accountId}/courses`,
-        { state: ["available"], enrollment_type: "teacher" },
+        { state: ["available", "unpublished"], enrollment_type: "teacher" },
       ),
       this.client.getTerms(),
     ]);

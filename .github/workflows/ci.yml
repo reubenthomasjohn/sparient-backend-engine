@@ -1,0 +1,43 @@
+name: CI
+
+# Fast feedback on every push and PR — independent of the deploy workflow.
+# Doesn't need AWS credentials so it runs on forks and feature branches.
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        env:
+          # Prisma's schema validation only — no actual DB connection happens.
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+        run: npx prisma generate
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests
+        run: npm run test:integration
+        # Testcontainers spins up Postgres via Docker, which is preinstalled
+        # on ubuntu-latest. Set TESTCONTAINERS_RYUK_DISABLED=true if needed
+        # to skip the Ryuk reaper container in restricted environments.

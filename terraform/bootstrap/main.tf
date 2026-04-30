@@ -93,7 +93,7 @@ resource "aws_iam_openid_connect_provider" "github" {
   thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
 }
 
-output "state_bucket_name"     { value = aws_s3_bucket.state.id }
-output "lock_table_name"       { value = aws_dynamodb_table.lock.name }
-output "region"                { value = var.region }
+output "state_bucket_name" { value = aws_s3_bucket.state.id }
+output "lock_table_name" { value = aws_dynamodb_table.lock.name }
+output "region" { value = var.region }
 output "github_oidc_provider_arn" { value = aws_iam_openid_connect_provider.github.arn }

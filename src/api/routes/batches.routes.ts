@@ -61,6 +61,26 @@ router.get('/:batchId/files', async (req: Request, res: Response, next: NextFunc
   }
 });
 
+// POST /batches/:batchId/files/:batchFileId/acknowledge
+// UI-only flag — marks the user as having reviewed this remediation result.
+// Has no effect on the writeback pipeline (writeback is not gated on ack).
+router.post(
+  '/:batchId/files/:batchFileId/acknowledge',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { batchId, batchFileId } = req.params;
+      const { count } = await prisma.batchFile.updateMany({
+        where: { id: batchFileId, batchId },
+        data: { reviewAcknowledged: true },
+      });
+      if (count === 0) throw Errors.notFound('BatchFile');
+      res.json({ success: true, batchFileId });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /institutions/:institutionId/batches
 router.get(
   '/institutions/:institutionId',

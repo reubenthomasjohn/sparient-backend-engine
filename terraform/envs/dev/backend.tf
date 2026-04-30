@@ -1,8 +1,8 @@
 terraform {
   required_version = ">= 1.6"
   required_providers {
-    aws  = { source = "hashicorp/aws",  version = "~> 5.60" }
-    neon = { source = "kislerdm/neon",  version = "~> 0.6" }
+    aws  = { source = "hashicorp/aws", version = "~> 5.60" }
+    neon = { source = "kislerdm/neon", version = "~> 0.6" }
   }
 
   # Fill these in after running terraform/bootstrap.

@@ -19,6 +19,13 @@ export interface UploadJob {
   s3Bucket: string;
 }
 
+// One message per writeback-eligible batch_file. Enqueued by RemediationService once
+// a batch goes terminal; consumed by the writeback worker which pushes the remediated
+// PDF back into Canvas.
+export interface WritebackJob {
+  batchFileId: string;
+}
+
 function build<T>(name: string, url?: string): Queue<T> {
   return url
     ? new SqsQueue<T>(name, url, config.aws.region)
@@ -26,5 +33,6 @@ function build<T>(name: string, url?: string): Queue<T> {
 }
 
 export const discoveryQueue: Queue<DiscoveryJob> = build('discovery', config.queue.discoveryUrl);
+export const writebackQueue: Queue<WritebackJob> = build('writeback', config.queue.writebackUrl);
 
 export { Queue, MessageHandler } from './IQueue';

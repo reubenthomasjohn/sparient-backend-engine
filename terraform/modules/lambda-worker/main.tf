@@ -1,13 +1,13 @@
 # Generic SQS-triggered Lambda. Used for discovery + upload.
 # Image is referenced by digest (not :latest) so terraform apply is reproducible.
 
-variable "name_prefix"        { type = string }
-variable "worker_name"        { type = string } # "discovery" or "upload"
-variable "ecr_repo_url"       { type = string } # ECR repo URL — Lambda starts with :bootstrap, CI updates
-variable "queue_arn"          { type = string }
-variable "queue_url"          { type = string }
-variable "dlq_arn"            { type = string } # for permissions parity; unused at runtime
-variable "max_concurrency"    { type = number } # caps SQS event source concurrency
+variable "name_prefix" { type = string }
+variable "worker_name" { type = string }  # "discovery" or "upload"
+variable "ecr_repo_url" { type = string } # ECR repo URL — Lambda starts with :bootstrap, CI updates
+variable "queue_arn" { type = string }
+variable "queue_url" { type = string }
+variable "dlq_arn" { type = string }         # for permissions parity; unused at runtime
+variable "max_concurrency" { type = number } # caps SQS event source concurrency
 variable "vpc_subnet_ids" {
   type    = list(string)
   default = []
@@ -17,8 +17,8 @@ variable "security_group_ids" {
   type    = list(string)
   default = []
 }
-variable "env"                { type = map(string) }
-variable "role_arn"           { type = string }
+variable "env" { type = map(string) }
+variable "role_arn" { type = string }
 
 variable "timeout_seconds" {
   type    = number
@@ -75,4 +75,4 @@ resource "aws_lambda_event_source_mapping" "sqs" {
 }
 
 output "function_name" { value = aws_lambda_function.this.function_name }
-output "function_arn"  { value = aws_lambda_function.this.arn }
+output "function_arn" { value = aws_lambda_function.this.arn }

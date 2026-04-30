@@ -97,6 +97,28 @@ Dev uses Neon (free, publicly reachable, no VPC needed). For prod, switch to RDS
 
 **Why not now:** MIME filter keeps files small, each Lambda handles one file in isolation (so concurrency doesn't compound), and the per-file savings are a few hundred ms. Pick this up if (a) the MIME filter widens, (b) we see OOMs, or (c) total upload latency becomes a user-visible issue.
 
+## Re-issue `(quality_label, review_acknowledged)` index as CONCURRENTLY for prod
+
+Migration `20260428200000_move_review_acknowledged` creates the `batch_files_quality_label_review_acknowledged_idx` index transactionally — fine on Neon dev (empty table), but a populated prod `batch_files` would block all reads/writes for the duration of the build. Before the first prod deploy that runs against a non-trivial table, drop and re-create as `CREATE INDEX CONCURRENTLY` (in a non-transactional migration, e.g. via the `-- prisma-disable-migrations-transaction` directive once verified against our Prisma version).
+
+## Writeback: post-Canvas-write supersession re-check
+
+`WritebackService` checks supersession (`sourceFile.batchedModifiedAt = batchFile.sourceModifiedAt`) before calling Canvas's `replaceFile`, but does NOT re-check after the call returns. In a narrow race window, a parallel writeback for a *newer* batch on the same `sourceFile` could complete between our check and our post-write update — and our update would then overwrite the newer batch's `lastWritebackModifiedAt` stamp with the older one. The Canvas write itself is idempotent (overwrite by file id), so the bytes are fine; only the bookkeeping is wrong, and `FileChangeDetector` could re-ingest the file as if it were a new edit.
+
+**Fix when this becomes observable:** wrap the post-write `sourceFile.update` in an `updateMany` with `WHERE batchedModifiedAt = batchFile.sourceModifiedAt` so a stale writer no-ops instead of clobbering. Today the writeback queue's bounded concurrency makes this rare; defer until we see it in logs.
+
+## Writeback: verify Canvas `modified_at` precision contract
+
+`FileChangeDetector` uses exact-millisecond equality (`d.modifiedAt.getTime() === row.lastWritebackModifiedAt.getTime()`) to skip our own writebacks. We stamp `lastWritebackModifiedAt` from the Canvas response of the upload. If Canvas's list endpoint serializes timestamps differently from its upload-confirm endpoint (sub-second truncation, rounding), the equality check will silently fail and we'll re-ingest our writebacks as new edits — defeating the loop guard.
+
+We don't currently know whether this drift exists. Watch for it: a `Writeback: written to Canvas` log followed on the next sync pass by a `FileChangeDetector` re-discovery for the same `canvasFileId` is the signature. If observed, switch the equality check to a small tolerance (e.g. `Math.abs(diff) < 1500ms`).
+
+## Surface `qualityLabel = 'Failed'` writebacks in the UI
+
+Writeback currently pushes any `BatchFile` whose `connectivoState IN ('completed', 'completed_with_warnings')` and has a `remediatedS3Key`, regardless of `qualityLabel`. That means files Connectivo flagged as quality-`Failed` (or `RequiresReview`) are still pushed back to Canvas — by design, since `reviewAcknowledged` is purely a tracking flag, not a gate.
+
+Surface a UI distinction so users can see which writebacks landed despite a `Failed`/`RequiresReview` quality label and choose to roll them back or supersede them. No backend gating change required — just a query on `batch_files` filtered by `qualityLabel` and `writebackState='written'`.
+
 ## On-demand file remediation
 
 Support queuing remediation for a user-selected set of files (not just full-course syncs). From Canvas, a user should be able to select specific files and hit a "queue for remediation" button.

@@ -17,9 +17,9 @@ export interface DiscoveredFile {
   downloadUrl: string;
 }
 
-// Shared across the replace/upload methods. s3Key points at the exact bucket object
-// whose bytes should be pushed back to the source; callers pin the version to upload
-// by choosing the key.
+// Shared across the replace/upload methods. s3Key is the *full* key as it lives in
+// S3 — including any prefix (connectivo-incoming/, connectivo-remediated/). Callers
+// pin the version to upload by choosing the key.
 interface UploadFromS3Base {
   s3Bucket: string;
   s3Key: string;

@@ -106,14 +106,14 @@ data "aws_iam_policy_document" "lambda_runtime" {
 
   # S3
   statement {
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = [
       "arn:aws:s3:::sparient-*/*",
       "arn:aws:s3:::accesshub-remediation-storage/*",
     ]
   }
   statement {
-    actions   = ["s3:ListBucket"]
+    actions = ["s3:ListBucket"]
     resources = [
       "arn:aws:s3:::sparient-*",
       "arn:aws:s3:::accesshub-remediation-storage",
@@ -143,6 +143,7 @@ locals {
     AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     DATABASE_URL                        = neon_project.this.connection_uri
     SQS_DISCOVERY_URL                   = module.queues.discovery_queue_url
+    SQS_WRITEBACK_URL                   = module.queues.writeback_queue_url
     SQS_RESPONSES_QUEUE_ARN             = aws_sqs_queue.responses.arn
     QUEUE_START_CONSUMERS               = "false"
   }
@@ -161,7 +162,7 @@ module "discovery_worker" {
   dlq_arn         = module.queues.discovery_queue_arn
   max_concurrency = var.discovery_max_concurrency
   role_arn        = aws_iam_role.lambda_exec.arn
-  env             = merge(local.common_env, {
+  env = merge(local.common_env, {
     COURSE_WORKFLOW_ARN = aws_sfn_state_machine.course_workflow.arn
   })
 }
@@ -206,6 +207,21 @@ module "responses_worker" {
   env             = local.common_env
 }
 
+# Writeback: RemediationService → SQS → Lambda → Canvas. Concurrency capped low
+# to respect Canvas's rate limits (file uploads are the most rate-limited endpoint).
+module "writeback_worker" {
+  source          = "../../modules/lambda-worker"
+  name_prefix     = var.name_prefix
+  worker_name     = "writeback"
+  ecr_repo_url    = module.ecr.repo_urls["sparient-writeback"]
+  queue_arn       = module.queues.writeback_queue_arn
+  queue_url       = module.queues.writeback_queue_url
+  dlq_arn         = module.queues.writeback_dlq_arn
+  max_concurrency = var.writeback_max_concurrency
+  role_arn        = aws_iam_role.lambda_exec.arn
+  env             = local.common_env
+}
+
 # API
 module "api" {
   source                  = "../../modules/lambda-api"
@@ -213,7 +229,7 @@ module "api" {
   ecr_repo_url            = module.ecr.repo_urls["sparient-api"]
   role_arn                = aws_iam_role.lambda_exec.arn
   provisioned_concurrency = var.api_provisioned_concurrency
-  env                     = merge(local.common_env, {
+  env = merge(local.common_env, {
     COURSE_WORKFLOW_ARN = aws_sfn_state_machine.course_workflow.arn
   })
 }
@@ -264,9 +280,9 @@ resource "aws_sfn_state_machine" "course_workflow" {
         Parameters = {
           FunctionName = aws_lambda_function.course_workflow.arn
           Payload = {
-            "step"            = "discover-courses"
-            "institutionId.$" = "$.institutionId"
-            "force.$"         = "$.force"
+            "step"             = "discover-courses"
+            "institutionId.$"  = "$.institutionId"
+            "force.$"          = "$.force"
             "singleCourseId.$" = "$.singleCourseId"
           }
         }
@@ -291,11 +307,11 @@ resource "aws_sfn_state_machine" "course_workflow" {
           "s3Bucket.$"       = "$.context.s3Bucket"
           "force.$"          = "$.context.force"
           "canvasCourseId.$" = "$$.Map.Item.Value.canvasCourseId"
-          "courseId.$"        = "$$.Map.Item.Value.courseId"
+          "courseId.$"       = "$$.Map.Item.Value.courseId"
         }
         ItemProcessor = {
           ProcessorConfig = { Mode = "INLINE" }
-          StartAt = "DiscoverFiles"
+          StartAt         = "DiscoverFiles"
           States = {
 
             # Step 1: Discover files for this course.
@@ -310,15 +326,15 @@ resource "aws_sfn_state_machine" "course_workflow" {
                   "s3Bucket.$"       = "$.s3Bucket"
                   "canvasCourseId.$" = "$.canvasCourseId"
                   "courseId.$"       = "$.courseId"
-                  "force.$"         = "$.force"
+                  "force.$"          = "$.force"
                 }
               }
               ResultPath = "$.discovery"
               ResultSelector = {
-                "hasWork.$"        = "$.Payload.hasWork"
-                "isInitialSync.$"  = "$.Payload.isInitialSync"
-                "fileIds.$"        = "$.Payload.fileIds"
-                "s3Bucket.$"       = "$.Payload.s3Bucket"
+                "hasWork.$"       = "$.Payload.hasWork"
+                "isInitialSync.$" = "$.Payload.isInitialSync"
+                "fileIds.$"       = "$.Payload.fileIds"
+                "s3Bucket.$"      = "$.Payload.s3Bucket"
               }
               Next = "CheckHasWork"
             }
@@ -327,9 +343,9 @@ resource "aws_sfn_state_machine" "course_workflow" {
             CheckHasWork = {
               Type = "Choice"
               Choices = [{
-                Variable  = "$.discovery.hasWork"
+                Variable      = "$.discovery.hasWork"
                 BooleanEquals = true
-                Next      = "UploadFiles"
+                Next          = "UploadFiles"
               }]
               Default = "SkipCourse"
             }
@@ -351,7 +367,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
               }
               ItemProcessor = {
                 ProcessorConfig = { Mode = "INLINE" }
-                StartAt = "UploadOneFile"
+                StartAt         = "UploadOneFile"
                 States = {
                   UploadOneFile = {
                     Type     = "Task"

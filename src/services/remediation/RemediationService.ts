@@ -5,6 +5,7 @@ import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 import { Errors } from '../../utils/errors';
 import { computeFailureUpdate } from '../../utils/failure';
+import { writebackQueue } from '../../queue';
 
 const STATE_MAP: Record<string, ConnectivoFileState> = {
   Completed: 'completed',
@@ -23,6 +24,26 @@ const QUALITY_MAP: Record<string, QualityLabel> = {
 
 const TERMINAL_BATCH_STATUSES: BatchStatus[] = ['completed', 'completed_with_warnings', 'failed'];
 
+// Connectivo reports remediated_path as "/<bucket>/<key>". Strip leading slashes
+// and the bucket segment to get the actual S3 key. Robust against malformed inputs
+// like "//<bucket>/..." which the previous single regex silently passed through,
+// and against "/<bucket>/" (bucket without a key) which would otherwise return "".
+// Exported for unit tests.
+export function stripBucketFromPath(path: string): string | null {
+  const trimmed = path.replace(/^\/+/, '');
+  const firstSlash = trimmed.indexOf('/');
+  if (firstSlash === -1) {
+    logger.warn('RemediationService: remediated_path lacks bucket prefix', { path });
+    return null;
+  }
+  const key = trimmed.slice(firstSlash + 1);
+  if (key === '') {
+    logger.warn('RemediationService: remediated_path has bucket but no key', { path });
+    return null;
+  }
+  return key;
+}
+
 export class RemediationService {
   async handleResults(batchId: string, payload: ConnectivoResultsPayload): Promise<void> {
     const batch = await prisma.batch.findUnique({
@@ -33,7 +54,11 @@ export class RemediationService {
     if (!batch) throw Errors.notFound('Batch');
 
     if (TERMINAL_BATCH_STATUSES.includes(batch.status)) {
-      logger.info('RemediationService: batch already terminal, ignoring re-delivery', { batchId });
+      // Re-delivery (Connectivo wrote response.json again, or our prior invocation
+      // crashed between tx commit and writeback enqueue). The DB outcome work is
+      // already done — but writebacks may not be, so re-run the idempotent producer.
+      logger.info('RemediationService: batch already terminal, re-checking writeback enqueue', { batchId });
+      await this.enqueueWritebacks(batchId);
       return;
     }
 
@@ -68,10 +93,8 @@ export class RemediationService {
 
         const connectivoState = STATE_MAP[result.state] ?? 'failed';
         const qualityLabel = result.quality_label ? (QUALITY_MAP[result.quality_label] ?? null) : null;
-        // Connectivo reports remediated_path as "/<bucket>/<key>". Strip leading "/<bucket>/"
-        // to get the actual S3 key. TODO: review this stripping logic if Connectivo changes format.
         const remediatedS3Key = result.remediated_path
-          ? result.remediated_path.replace(/^\/[^/]+\//, '')
+          ? stripBucketFromPath(result.remediated_path)
           : null;
 
         await tx.batchFile.update({
@@ -156,5 +179,106 @@ export class RemediationService {
     });
 
     logger.info('RemediationService: results processed', { batchId });
+
+    // After the transaction commits, fan out writeback jobs for eligible files.
+    // Eligibility is re-checked inside the worker — the producer query just avoids
+    // enqueueing jobs that are obviously not actionable (no remediated bytes,
+    // failed state, opt-out at the institution level).
+    await this.enqueueWritebacks(batchId);
+  }
+
+  // Idempotent: safe to call multiple times for the same batch. SQS redrives and
+  // crash-recovery from a re-delivered response use this path to catch up — already
+  // -written files are skipped, already-superseded ones are skipped, and per-send
+  // failures don't abandon the rest of the batch.
+  private async enqueueWritebacks(batchId: string): Promise<void> {
+    const batch = await prisma.batch.findUnique({
+      where: { id: batchId },
+      include: {
+        institution: { select: { writebackOptIn: true } },
+        course: { select: { writebackOptIn: true } },
+        batchFiles: {
+          select: {
+            id: true,
+            connectivoState: true,
+            remediatedS3Key: true,
+            remediatedS3Bucket: true,
+            sourceModifiedAt: true,
+            sourceFile: {
+              select: {
+                writebackState: true,
+                lastWritebackModifiedAt: true,
+                batchedModifiedAt: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!batch) return;
+
+    const optedIn = batch.course.writebackOptIn ?? batch.institution.writebackOptIn;
+    if (!optedIn) {
+      logger.info('RemediationService: writeback skipped — opt-out', { batchId });
+      return;
+    }
+
+    const eligible = batch.batchFiles.filter((bf) => {
+      if (bf.connectivoState !== 'completed' && bf.connectivoState !== 'completed_with_warnings') {
+        return false;
+      }
+      if (!bf.remediatedS3Key || !bf.remediatedS3Bucket) return false;
+
+      const sf = bf.sourceFile;
+
+      // Supersession: a newer batch already claimed this source_file. The consumer
+      // would skip it; mirror the check here so we don't spam SQS on redelivery.
+      if (
+        sf.batchedModifiedAt === null ||
+        sf.batchedModifiedAt.getTime() !== bf.sourceModifiedAt.getTime()
+      ) {
+        return false;
+      }
+
+      // Dedupe: a successful writeback stamps lastWritebackModifiedAt with Canvas's
+      // post-upload timestamp, which is strictly *after* our sourceModifiedAt. So
+      // "already written for this version" = state is 'written' AND the stamped
+      // Canvas time sits past our sourceModifiedAt.
+      const alreadyWrittenForVersion =
+        sf.writebackState === 'written' &&
+        sf.lastWritebackModifiedAt !== null &&
+        sf.lastWritebackModifiedAt.getTime() > bf.sourceModifiedAt.getTime();
+      return !alreadyWrittenForVersion;
+    });
+
+    if (eligible.length === 0) return;
+
+    let sent = 0;
+    let failed = 0;
+    for (const bf of eligible) {
+      try {
+        await writebackQueue.send({ batchFileId: bf.id });
+        sent++;
+      } catch (err) {
+        failed++;
+        logger.error('RemediationService: writeback enqueue failed, continuing', {
+          batchId,
+          batchFileId: bf.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    logger.info('RemediationService: writeback jobs enqueued', { batchId, sent, failed });
+
+    // Throw if anything failed so SQS redrives the response message — the dedupe +
+    // supersession filters above make redelivery idempotent (already-sent jobs are
+    // skipped). Returning success on a partial failure would silently lose work.
+    if (failed > 0) {
+      throw new Error(
+        `Writeback enqueue partially failed for batch ${batchId}: sent=${sent} failed=${failed}`,
+      );
+    }
   }
 }

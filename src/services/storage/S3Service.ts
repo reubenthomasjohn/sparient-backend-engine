@@ -38,10 +38,13 @@ class S3Service {
     logger.info('S3: source file uploaded', { bucket, key: fullKey });
   }
 
-  async getSourceFileBytes(bucket: string, key: string): Promise<Uint8Array> {
-    const fullKey = `${S3_PREFIX.SOURCE}/${key}`;
-    const r = await this.client.send(new GetObjectCommand({ Bucket: bucket, Key: fullKey }));
-    if (!r.Body) throw new Error(`S3 GetObject returned no body for key ${fullKey}`);
+  // Reads an object as bytes. Caller passes the key exactly as it lives in S3 —
+  // any prefix (connectivo-incoming/, connectivo-remediated/, ...) is the caller's
+  // responsibility. Used by the writeback path to read the remediated PDF whose
+  // key Connectivo writes already includes the prefix.
+  async getObjectBytes(bucket: string, key: string): Promise<Uint8Array> {
+    const r = await this.client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if (!r.Body) throw new Error(`S3 GetObject returned no body for key ${key}`);
     return r.Body.transformToByteArray();
   }
 

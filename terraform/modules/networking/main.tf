@@ -18,7 +18,7 @@ resource "aws_vpc" "this" {
   cidr_block           = var.cidr_block
   enable_dns_hostnames = true
   enable_dns_support   = true
-  tags = { Name = "${var.name_prefix}-vpc" }
+  tags                 = { Name = "${var.name_prefix}-vpc" }
 }
 
 resource "aws_internet_gateway" "this" {
@@ -32,7 +32,7 @@ resource "aws_subnet" "public" {
   availability_zone       = var.azs[count.index]
   cidr_block              = cidrsubnet(var.cidr_block, 8, count.index)
   map_public_ip_on_launch = true
-  tags = { Name = "${var.name_prefix}-public-${var.azs[count.index]}" }
+  tags                    = { Name = "${var.name_prefix}-public-${var.azs[count.index]}" }
 }
 
 resource "aws_subnet" "private" {
@@ -40,7 +40,7 @@ resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.this.id
   availability_zone = var.azs[count.index]
   cidr_block        = cidrsubnet(var.cidr_block, 8, count.index + 10)
-  tags = { Name = "${var.name_prefix}-private-${var.azs[count.index]}" }
+  tags              = { Name = "${var.name_prefix}-private-${var.azs[count.index]}" }
 }
 
 resource "aws_eip" "nat" {
@@ -85,6 +85,6 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-output "vpc_id"             { value = aws_vpc.this.id }
-output "public_subnet_ids"  { value = aws_subnet.public[*].id }
+output "vpc_id" { value = aws_vpc.this.id }
+output "public_subnet_ids" { value = aws_subnet.public[*].id }
 output "private_subnet_ids" { value = aws_subnet.private[*].id }

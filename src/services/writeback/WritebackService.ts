@@ -1,0 +1,126 @@
+import prisma from '../../db/client';
+import { SourceRegistry } from '../sources/SourceRegistry';
+import { logger } from '../../utils/logger';
+
+// Pushes a remediated PDF back into the source system (Canvas) for a single
+// batch_file. Eligibility is re-checked at the worker so an enqueued job that
+// has been superseded by a newer remediation cycle becomes a no-op.
+//
+// Idempotency: at-least-once delivery is fine. CanvasFileReplacer.replaceFile
+// uses on_duplicate=overwrite against the same file id; a duplicate run
+// re-uploads the same bytes. The post-write update of writebackState +
+// lastWritebackModifiedAt is also idempotent.
+export class WritebackService {
+  async writeBack(batchFileId: string): Promise<void> {
+    const batchFile = await prisma.batchFile.findUnique({
+      where: { id: batchFileId },
+      include: {
+        sourceFile: { include: { course: { include: { institution: true } } } },
+      },
+    });
+
+    if (!batchFile) {
+      logger.warn('Writeback: batch_file not found, dropping', { batchFileId });
+      return;
+    }
+
+    const { sourceFile } = batchFile;
+    const { course } = sourceFile;
+    const { institution } = course;
+
+    // Re-check eligibility under fresh DB state. The producer (RemediationService)
+    // already filtered, but state can change between enqueue and consume.
+    if (
+      batchFile.connectivoState !== 'completed' &&
+      batchFile.connectivoState !== 'completed_with_warnings'
+    ) {
+      logger.info('Writeback: skip — not in a terminal completed state', {
+        batchFileId,
+        connectivoState: batchFile.connectivoState,
+      });
+      return;
+    }
+
+    if (!batchFile.remediatedS3Key || !batchFile.remediatedS3Bucket) {
+      logger.info('Writeback: skip — no remediated S3 location', { batchFileId });
+      return;
+    }
+
+    const optedIn = course.writebackOptIn ?? institution.writebackOptIn;
+    if (!optedIn) {
+      logger.info('Writeback: skip — opt-out', { batchFileId, courseId: course.id });
+      return;
+    }
+
+    // Supersession guard: a newer batch has claimed this source_file. Pushing
+    // this older remediation would clobber whatever the newer cycle produces.
+    if (
+      sourceFile.batchedModifiedAt === null ||
+      sourceFile.batchedModifiedAt.getTime() !== batchFile.sourceModifiedAt.getTime()
+    ) {
+      logger.info('Writeback: skip — superseded by newer batch', {
+        batchFileId,
+        sourceModifiedAt: batchFile.sourceModifiedAt,
+        batchedModifiedAt: sourceFile.batchedModifiedAt,
+      });
+      return;
+    }
+
+    const sourceClient = SourceRegistry.getClient(institution);
+
+    // The bytes are PDFs by contract — Connectivo's output format. Use that MIME
+    // explicitly rather than the source's mimeType, which may have been docx/pptx.
+    //
+    // knownModifiedAt is the version we *actually remediated* (batchFile.sourceModifiedAt),
+    // not discoveredModifiedAt. If a teacher edited the file in Canvas between batch
+    // creation and writeback, discoveredModifiedAt may have advanced past our remediated
+    // version — using it here would let us overwrite their newer edit with a stale PDF.
+    const result = await sourceClient.replaceFile({
+      fileExternalId: sourceFile.canvasFileId,
+      knownModifiedAt: batchFile.sourceModifiedAt,
+      s3Bucket: batchFile.remediatedS3Bucket,
+      s3Key: batchFile.remediatedS3Key,
+      mimeType: 'application/pdf',
+    });
+
+    if (result.status === 'skipped') {
+      // Same guard as the failure path: only stamp if no successful terminal state
+      // is already recorded for this source_file. Without this, a 'skipped' from
+      // *this* cycle would clobber a 'written' from a prior cycle whose Canvas-side
+      // timestamp legitimately sits beyond our knownModifiedAt.
+      await prisma.sourceFile.updateMany({
+        where: {
+          id: sourceFile.id,
+          OR: [{ writebackState: null }, { writebackState: 'failed' }],
+        },
+        data: { writebackState: 'skipped_stale' },
+      });
+      logger.info('Writeback: skipped (Canvas-side drift)', {
+        batchFileId,
+        sourceFileId: sourceFile.id,
+        reason: result.reason,
+      });
+      return;
+    }
+
+    // Success: stamp the modifiedAt Canvas returned for the new upload. The
+    // FileChangeDetector consults this exact value to skip our own writebacks
+    // on the next discover pass.
+    await prisma.sourceFile.update({
+      where: { id: sourceFile.id },
+      data: {
+        writebackState: 'written',
+        lastWritebackModifiedAt: result.file.modifiedAt,
+      },
+    });
+
+    logger.info('Writeback: written to Canvas', {
+      batchFileId,
+      sourceFileId: sourceFile.id,
+      canvasFileId: result.file.externalId,
+      newModifiedAt: result.file.modifiedAt,
+    });
+  }
+}
+
+export const writebackService = new WritebackService();

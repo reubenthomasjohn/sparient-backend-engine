@@ -105,7 +105,36 @@ Target region: **us-east-2**. Single environment, Neon Postgres, no VPC.
                                                       │   writes outcomes │
                                                       │   to Neon DB      │
                                                       │ • batch → terminal│
-                                                      └───────────────────┘
+                                                      │ • enqueue writeback│
+                                                      │   for each eligible│
+                                                      │   batch_file       │
+                                                      └────────┬──────────┘
+                                                               │
+                                                               ▼
+                                                      ┌───────────────────┐
+                                                      │ writeback queue   │  SQS
+                                                      │    + DLQ          │
+                                                      └────────┬──────────┘
+                                                               │
+                                                               ▼
+                                                      ┌───────────────────┐
+                                                      │ writeback Lambda  │
+                                                      │  MaxConcurrency=3 │
+                                                      │                   │
+                                                      │ • read remediated │
+                                                      │   PDF from S3     │
+                                                      │ • Canvas replace  │
+                                                      │   (overwrite by id│
+                                                      │   — same fileId)  │
+                                                      │ • stamp           │
+                                                      │   writebackState  │
+                                                      └─────────┬─────────┘
+                                                                │
+                                                                ▼ POST multipart
+                                                       Canvas LMS file API
+                                                       (file content replaced
+                                                        in place — same fileId,
+                                                        same UI link)
 
                                                 All Lambdas ──▶ Neon Postgres
                                                                (public endpoint,
@@ -116,14 +145,15 @@ Target region: **us-east-2**. Single environment, Neon Postgres, no VPC.
 
 ## Components
 
-### Lambdas (4 total, all Docker x86_64)
+### Lambdas (5 total, all Docker x86_64)
 
 | Lambda | Trigger | MaxConcurrency | Purpose |
 |---|---|---|---|
 | `sparient-dev-api` | API Gateway (HTTP API) | account default | Express app: sync triggers, batch queries, admin endpoints |
 | `sparient-dev-discovery` | discovery queue (SQS) | 5 | `tick`: check which institutions are due (by `sync_time`). `discover`: list courses, start one SFN execution per course |
 | `sparient-dev-course-workflow` | Step Functions | 10 (via Map state) | All 3 SFN steps: discover-files, upload-file, batch-publish |
-| `sparient-dev-responses` | responses queue (SQS) | 5 | Read + validate response.json from S3, write outcomes to DB |
+| `sparient-dev-responses` | responses queue (SQS) | 5 | Read + validate response.json from S3, write outcomes to DB, enqueue writeback jobs |
+| `sparient-dev-writeback` | writeback queue (SQS) | 3 | Read remediated PDF from S3, push back to Canvas via overwrite-by-id; capped low to respect Canvas rate limits |
 
 All Lambdas: 1024 MB memory, 15-min timeout (workers), 30s timeout (API). No VPC attachment.
 
@@ -139,12 +169,13 @@ All Lambdas: 1024 MB memory, 15-min timeout (workers), 30s timeout (API). No VPC
 
 Step Functions guarantees one batch per course per sync pass — no split batches from parallel uploads.
 
-### SQS Queues (2 + 2 DLQs)
+### SQS Queues (3 + 3 DLQs)
 
 | Queue | Producer | Consumer | Notes |
 |---|---|---|---|
 | `sparient-dev-discovery` | API Lambda (manual sync), EventBridge (tick every 15 min) | discovery Lambda | `tick` and `discover` message types |
 | `sparient-dev-responses` | S3 event notification (response bucket) | responses Lambda | Triggered when Connectivo writes response.json |
+| `sparient-dev-writeback` | responses Lambda (one message per writeback-eligible batch_file) | writeback Lambda | Per-file writeback to Canvas; bounded concurrency for rate limits |
 
 Visibility timeout: 15 min. Max receives: 3 before DLQ.
 

@@ -129,8 +129,6 @@ model SourceFile {
   maxRetries              Int             @default(3) @map("max_retries")
   nextRetryAt             DateTime?       @map("next_retry_at")
 
-  reviewAcknowledged      Boolean         @default(false) @map("review_acknowledged")
-
   writebackState          WritebackState? @map("writeback_state")
   lastWritebackModifiedAt DateTime?       @map("last_writeback_modified_at")
 
@@ -201,6 +199,10 @@ model BatchFile {
   totalIssuesFound     Int?                 @map("total_issues_found")
   totalIssuesFixed     Int?                 @map("total_issues_fixed")
   errorMessage         String?              @map("error_message")
+  // Per-cycle UI flag: a user has reviewed this remediation result. Tracking only —
+  // not consulted by the writeback path. Lives on batch_file (not source_file) so a
+  // new remediation cycle starts un-acked even if a previous cycle was reviewed.
+  reviewAcknowledged Boolean              @default(false) @map("review_acknowledged")
   createdAt          DateTime             @default(now()) @map("created_at")
   updatedAt          DateTime             @updatedAt @map("updated_at")
 
@@ -210,6 +212,8 @@ model BatchFile {
 
   @@index([batchId])
   @@index([sourceFileId])
+  // Drives the "to review" UI query (RequiresReview + not yet acknowledged).
+  @@index([qualityLabel, reviewAcknowledged])
   @@map("batch_files")
 }
 

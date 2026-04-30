@@ -35,6 +35,14 @@ variable "discovery_max_concurrency" {
   default = 5
 }
 
+# Writeback concurrency is capped low because Canvas rate-limits file uploads
+# aggressively. 3 parallel writebacks is conservative; tune up after observing
+# Canvas 429s in CloudWatch.
+variable "writeback_max_concurrency" {
+  type    = number
+  default = 3
+}
+
 # Provisioned concurrency on the API Lambda (1 warm instance ≈ $5/mo at 1 GB).
 variable "api_provisioned_concurrency" {
   type    = number
