@@ -36,14 +36,32 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
 
   // Refresh metadata right before download — Canvas pre-signed URLs expire quickly
   // and the URL captured at discovery time may have gone stale while the message sat in SQS.
-  const fresh = await sourceClient.getFile(row.course.canvasCourseId, row.canvasFileId);
+  let fresh = await sourceClient.getFile(row.course.canvasCourseId, row.canvasFileId);
+
+  // Transient-404 recovery. Marking deleted on a single 404 risks an infinite
+  // loop with the FileChangeDetector reappear-after-deleted path: deleted →
+  // cleared next sync → upload retries → 404 again → re-deleted forever. Most
+  // transient blips (rate limit, brief scope race) clear in seconds; real
+  // deletions stay 404. Retry once with a short backoff before committing to
+  // the delete. Discovery's cross-reference is still the primary deletion
+  // signal — this just stops the upload worker from over-eagerly racing to
+  // mark deleted on a flake.
+  if (!fresh) {
+    logger.warn('Upload: Canvas getFile returned 404, retrying once after backoff', {
+      sourceFileId: row.id,
+    });
+    await new Promise((r) => setTimeout(r, 5000));
+    fresh = await sourceClient.getFile(row.course.canvasCourseId, row.canvasFileId);
+  }
 
   if (!fresh) {
     await prisma.sourceFile.update({
       where: { id: row.id },
       data: { lastOutcome: 'deleted' },
     });
-    logger.info('Upload: file gone from Canvas, marked deleted', { sourceFileId: row.id });
+    logger.info('Upload: file gone from Canvas (confirmed after retry), marked deleted', {
+      sourceFileId: row.id,
+    });
     return;
   }
 

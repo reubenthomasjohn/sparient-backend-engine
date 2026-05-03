@@ -1,6 +1,28 @@
 import axios, { AxiosInstance } from 'axios';
+import JSONBig from 'json-bigint';
 import { CanvasFile, CanvasFolder, CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
+
+// Canvas Enterprise tenants assign integer IDs exceeding Number.MAX_SAFE_INTEGER
+// (18+ digits). The default JSON.parse silently rounds the trailing digits,
+// breaking every downstream comparison. json-bigint with `storeAsString: true`
+// returns ALL JSON integers as strings, so the CanvasFile/CanvasCourse types
+// can declare id-fields as `string` and stay consistent regardless of size.
+const jsonBigParser = JSONBig({ storeAsString: true });
+
+// Used as axios `transformResponse` for any request that may return a Canvas
+// object. Both the shared `this.http` instance AND the bare axios.post in
+// finishUpload need this — the latter goes to Inst-FS (a different host) but
+// the response still contains a Canvas file with potentially huge ids.
+function bigIntSafeJsonParse(data: unknown): unknown {
+  if (typeof data !== 'string' || data.length === 0) return data;
+  try {
+    return jsonBigParser.parse(data);
+  } catch {
+    // Non-JSON responses (HTML error pages, etc.) shouldn't crash the parser.
+    return data;
+  }
+}
 
 interface CanvasCredentials {
   domain: string;
@@ -40,6 +62,8 @@ export class CanvasClient {
       },
       // Canvas rate-limits aggressively; a conservative timeout prevents hanging jobs
       timeout: 30_000,
+      // BigInt-safe response parsing — see bigIntSafeJsonParse helper above.
+      transformResponse: [bigIntSafeJsonParse],
       // Canvas expects repeated keys for arrays: content_types[]=a&content_types[]=b
       // axios's default serialises as content_types[0]=a which Canvas ignores
       paramsSerializer: (params: Record<string, unknown>) => {
@@ -164,15 +188,21 @@ export class CanvasClient {
     logger.info('Canvas: upload step 2 (bytes)', { uploadUrl: init.upload_url, bytes: body.byteLength });
 
     // No bearer here — upload_url lives on Inst-FS, not the Canvas API host.
-    const uploadResponse = await axios.post(init.upload_url, form, {
+    // We MUST apply bigIntSafeJsonParse here too — Inst-FS returns the new
+    // Canvas file object on 201 with the same large-id risk as the main API.
+    // axios's default JSON.parse on this response would mangle Enterprise IDs.
+    // The <CanvasFile> generic types `uploadResponse.data` so the cast at
+    // the 201 branch is type-checked rather than blindly trusting `any`.
+    const uploadResponse = await axios.post<CanvasFile>(init.upload_url, form, {
       maxRedirects: 0,
       // Accept redirects *and* 201s as success; anything else throws.
       validateStatus: (s) => s === 201 || (s >= 300 && s < 400),
       timeout: 300_000,
+      transformResponse: [bigIntSafeJsonParse],
     });
 
     if (uploadResponse.status === 201) {
-      return uploadResponse.data as CanvasFile;
+      return uploadResponse.data;
     }
 
     const location = uploadResponse.headers['location'];
