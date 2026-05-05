@@ -49,6 +49,7 @@ enum ConnectivoFileState {
   completed
   completed_with_warnings
   failed
+  skipped
 }
 
 model Institution {
