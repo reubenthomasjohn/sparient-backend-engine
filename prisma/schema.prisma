@@ -21,6 +21,7 @@ enum LastOutcome {
   failed
   permanently_failed
   deleted
+  skipped
 }
 
 enum WritebackState {
@@ -49,6 +50,7 @@ enum ConnectivoFileState {
   completed
   completed_with_warnings
   failed
+  skipped
 }
 
 model Institution {

@@ -56,7 +56,7 @@ const fileResultSchema = z.object({
     canvas_file_id: z.string(),
   }).passthrough(),
   quality_label: z.string().nullable(),
-  state: z.enum(['Completed', 'CompletedWithWarnings', 'Failed']),
+  state: z.enum(['Completed', 'CompletedWithWarnings', 'Failed', 'Skipped']),
   total_pages: z.number(),
   processing_time_seconds: z.number(),
   compliance_errors: z.number().default(0),

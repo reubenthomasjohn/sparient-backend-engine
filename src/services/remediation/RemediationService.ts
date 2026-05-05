@@ -10,6 +10,7 @@ const STATE_MAP: Record<string, ConnectivoFileState> = {
   Completed: 'completed',
   CompletedWithWarnings: 'completed_with_warnings',
   Failed: 'failed',
+  Skipped: 'skipped',
 };
 
 const QUALITY_MAP: Record<string, QualityLabel> = {
@@ -110,6 +111,11 @@ export class RemediationService {
           await tx.sourceFile.updateMany({
             where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
             data: { lastOutcome: 'completed', lastFailureReason: null },
+          });
+        } else if (connectivoState === 'skipped') {
+          await tx.sourceFile.updateMany({
+            where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
+            data: { lastOutcome: 'skipped', lastFailureReason: null },
           });
         } else if (connectivoState === 'completed_with_warnings') {
           await tx.sourceFile.updateMany({
