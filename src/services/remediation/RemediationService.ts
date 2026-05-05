@@ -107,10 +107,15 @@ export class RemediationService {
         }
 
         // Guard: only write the outcome if the file hasn't been claimed by a newer batch.
-        if (connectivoState === 'completed' || connectivoState === 'skipped') {
+        if (connectivoState === 'completed') {
           await tx.sourceFile.updateMany({
             where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
             data: { lastOutcome: 'completed', lastFailureReason: null },
+          });
+        } else if (connectivoState === 'skipped') {
+          await tx.sourceFile.updateMany({
+            where: { id: batchFile.sourceFileId, batchedModifiedAt: batchFile.sourceModifiedAt },
+            data: { lastOutcome: 'skipped', lastFailureReason: null },
           });
         } else if (connectivoState === 'completed_with_warnings') {
           await tx.sourceFile.updateMany({

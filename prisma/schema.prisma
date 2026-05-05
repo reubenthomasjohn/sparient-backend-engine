@@ -21,6 +21,7 @@ enum LastOutcome {
   failed
   permanently_failed
   deleted
+  skipped
 }
 
 enum WritebackState {
