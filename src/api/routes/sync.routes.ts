@@ -78,16 +78,22 @@ router.post(
   },
 );
 
-// POST /sync/institutions/:institutionId/courses/:courseId/retry-failed?include_permanently_failed=true
+// POST /sync/institutions/:institutionId/courses/:courseId/retry-failed?includePermanentlyFailed=true
 // Resets failed source_files in the course and starts a force sync so request.json
 // carries force_reprocess: true. By default only last_outcome='failed' rows are reset;
-// pass include_permanently_failed=true to also reset permanently_failed rows.
+// pass includePermanentlyFailed=true to also reset permanently_failed rows.
 router.post(
   '/institutions/:institutionId/courses/:courseId/retry-failed',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { institutionId, courseId } = req.params;
-      const includePermanentlyFailed = req.query.include_permanently_failed === 'true';
+      const includePermanentlyFailed = String(req.query.includePermanentlyFailed) === 'true';
+
+      const institution = await prisma.institution.findUnique({
+        where: { id: institutionId },
+        select: { id: true },
+      });
+      if (!institution) throw Errors.notFound('Institution');
 
       const course = await prisma.course.findFirst({
         where: { institutionId, canvasCourseId: courseId },
@@ -107,6 +113,7 @@ router.post(
           retryCount: 0,
           nextRetryAt: null,
           batchedModifiedAt: null,
+          discoveredModifiedAt: new Date(0),
         },
       });
 
