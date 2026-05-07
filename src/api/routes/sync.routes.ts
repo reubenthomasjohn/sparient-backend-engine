@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { LastOutcome } from '@prisma/client';
 import { SyncOrchestrator } from '../../services/sync/SyncOrchestrator';
 import prisma from '../../db/client';
+import { Errors } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 
 const router = Router();
@@ -67,6 +69,71 @@ router.post(
       res.json({
         success: true,
         message: force ? 'Full re-sync started' : 'Course sync started',
+        institutionId,
+        courseId,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /sync/institutions/:institutionId/courses/:courseId/retry-failed?include_permanently_failed=true
+// Resets failed source_files in the course and starts a force sync so request.json
+// carries force_reprocess: true. By default only last_outcome='failed' rows are reset;
+// pass include_permanently_failed=true to also reset permanently_failed rows.
+router.post(
+  '/institutions/:institutionId/courses/:courseId/retry-failed',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { institutionId, courseId } = req.params;
+      const includePermanentlyFailed = req.query.include_permanently_failed === 'true';
+
+      const course = await prisma.course.findFirst({
+        where: { institutionId, canvasCourseId: courseId },
+        select: { id: true },
+      });
+      if (!course) throw Errors.notFound('Course');
+
+      const outcomes: LastOutcome[] = includePermanentlyFailed
+        ? [LastOutcome.failed, LastOutcome.permanently_failed]
+        : [LastOutcome.failed];
+
+      const { count } = await prisma.sourceFile.updateMany({
+        where: { courseId: course.id, lastOutcome: { in: outcomes } },
+        data: {
+          lastOutcome: null,
+          lastFailureReason: null,
+          retryCount: 0,
+          nextRetryAt: null,
+          batchedModifiedAt: null,
+        },
+      });
+
+      if (count === 0) {
+        res.json({
+          success: true,
+          resetCount: 0,
+          message: 'No failed files to retry',
+          institutionId,
+          courseId,
+        });
+        return;
+      }
+
+      logger.info('Sync: retry-failed triggered', {
+        institutionId,
+        courseId,
+        resetCount: count,
+        includePermanentlyFailed,
+      });
+
+      await syncOrchestrator.syncCourse(institutionId, courseId, true);
+
+      res.json({
+        success: true,
+        resetCount: count,
+        message: 'Retry of failed files started',
         institutionId,
         courseId,
       });
