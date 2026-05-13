@@ -33,6 +33,64 @@ module "queues" {
 # No Terraform-managed bucket resource — Lambdas have IAM access to sparient-* buckets.
 # The InstitutionBucketService configures S3 event notifications at bucket creation time.
 
+# --- Explainer-video bucket ---
+# Holds the videos that map to Connectivo issue names (see videos / error_keywords tables).
+# Public-read on objects so the FE can use plain https URLs in <video> tags.
+resource "aws_s3_bucket" "accesshub_videos" {
+  bucket = "accesshub-videos"
+}
+
+# Block public ACLs (legacy/risky) but allow bucket policies that grant public read.
+resource "aws_s3_bucket_public_access_block" "accesshub_videos" {
+  bucket                  = aws_s3_bucket.accesshub_videos.id
+  block_public_acls       = true
+  block_public_policy     = false
+  ignore_public_acls      = true
+  restrict_public_buckets = false
+}
+
+data "aws_iam_policy_document" "accesshub_videos_public_read" {
+  statement {
+    sid       = "PublicReadGetObject"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.accesshub_videos.arn}/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "accesshub_videos_public_read" {
+  bucket = aws_s3_bucket.accesshub_videos.id
+  policy = data.aws_iam_policy_document.accesshub_videos_public_read.json
+  # The public-access block must be relaxed before the policy is accepted.
+  depends_on = [aws_s3_bucket_public_access_block.accesshub_videos]
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "accesshub_videos" {
+  bucket = aws_s3_bucket.accesshub_videos.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# CORS so browsers can fetch the videos cross-origin (needed if the FE uses fetch()
+# or Range requests via XHR; not strictly needed for a plain <video src="..."> tag,
+# but harmless and avoids surprises if the FE later switches to fetch-based playback).
+resource "aws_s3_bucket_cors_configuration" "accesshub_videos" {
+  bucket = aws_s3_bucket.accesshub_videos.id
+  cors_rule {
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = ["*"]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag", "Content-Length", "Content-Range"]
+    max_age_seconds = 3600
+  }
+}
+
 # --- Responses SQS queue (S3 event → SQS → responses Lambda) ---
 resource "aws_sqs_queue" "responses_dlq" {
   name                      = "${var.name_prefix}-responses-dlq"
@@ -106,17 +164,19 @@ data "aws_iam_policy_document" "lambda_runtime" {
 
   # S3
   statement {
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = [
       "arn:aws:s3:::sparient-*/*",
       "arn:aws:s3:::accesshub-remediation-storage/*",
+      "${aws_s3_bucket.accesshub_videos.arn}/*",
     ]
   }
   statement {
-    actions   = ["s3:ListBucket"]
+    actions = ["s3:ListBucket"]
     resources = [
       "arn:aws:s3:::sparient-*",
       "arn:aws:s3:::accesshub-remediation-storage",
+      aws_s3_bucket.accesshub_videos.arn,
     ]
   }
   statement {
@@ -161,7 +221,7 @@ module "discovery_worker" {
   dlq_arn         = module.queues.discovery_queue_arn
   max_concurrency = var.discovery_max_concurrency
   role_arn        = aws_iam_role.lambda_exec.arn
-  env             = merge(local.common_env, {
+  env = merge(local.common_env, {
     COURSE_WORKFLOW_ARN = aws_sfn_state_machine.course_workflow.arn
   })
 }
@@ -213,7 +273,7 @@ module "api" {
   ecr_repo_url            = module.ecr.repo_urls["sparient-api"]
   role_arn                = aws_iam_role.lambda_exec.arn
   provisioned_concurrency = var.api_provisioned_concurrency
-  env                     = merge(local.common_env, {
+  env = merge(local.common_env, {
     COURSE_WORKFLOW_ARN = aws_sfn_state_machine.course_workflow.arn
   })
 }
@@ -264,9 +324,9 @@ resource "aws_sfn_state_machine" "course_workflow" {
         Parameters = {
           FunctionName = aws_lambda_function.course_workflow.arn
           Payload = {
-            "step"            = "discover-courses"
-            "institutionId.$" = "$.institutionId"
-            "force.$"         = "$.force"
+            "step"             = "discover-courses"
+            "institutionId.$"  = "$.institutionId"
+            "force.$"          = "$.force"
             "singleCourseId.$" = "$.singleCourseId"
           }
         }
@@ -291,11 +351,11 @@ resource "aws_sfn_state_machine" "course_workflow" {
           "s3Bucket.$"       = "$.context.s3Bucket"
           "force.$"          = "$.context.force"
           "canvasCourseId.$" = "$$.Map.Item.Value.canvasCourseId"
-          "courseId.$"        = "$$.Map.Item.Value.courseId"
+          "courseId.$"       = "$$.Map.Item.Value.courseId"
         }
         ItemProcessor = {
           ProcessorConfig = { Mode = "INLINE" }
-          StartAt = "DiscoverFiles"
+          StartAt         = "DiscoverFiles"
           States = {
 
             # Step 1: Discover files for this course.
@@ -310,15 +370,15 @@ resource "aws_sfn_state_machine" "course_workflow" {
                   "s3Bucket.$"       = "$.s3Bucket"
                   "canvasCourseId.$" = "$.canvasCourseId"
                   "courseId.$"       = "$.courseId"
-                  "force.$"         = "$.force"
+                  "force.$"          = "$.force"
                 }
               }
               ResultPath = "$.discovery"
               ResultSelector = {
-                "hasWork.$"        = "$.Payload.hasWork"
-                "isInitialSync.$"  = "$.Payload.isInitialSync"
-                "fileIds.$"        = "$.Payload.fileIds"
-                "s3Bucket.$"       = "$.Payload.s3Bucket"
+                "hasWork.$"       = "$.Payload.hasWork"
+                "isInitialSync.$" = "$.Payload.isInitialSync"
+                "fileIds.$"       = "$.Payload.fileIds"
+                "s3Bucket.$"      = "$.Payload.s3Bucket"
               }
               Next = "CheckHasWork"
             }
@@ -327,9 +387,9 @@ resource "aws_sfn_state_machine" "course_workflow" {
             CheckHasWork = {
               Type = "Choice"
               Choices = [{
-                Variable  = "$.discovery.hasWork"
+                Variable      = "$.discovery.hasWork"
                 BooleanEquals = true
-                Next      = "UploadFiles"
+                Next          = "UploadFiles"
               }]
               Default = "SkipCourse"
             }
@@ -351,7 +411,7 @@ resource "aws_sfn_state_machine" "course_workflow" {
               }
               ItemProcessor = {
                 ProcessorConfig = { Mode = "INLINE" }
-                StartAt = "UploadOneFile"
+                StartAt         = "UploadOneFile"
                 States = {
                   UploadOneFile = {
                     Type     = "Task"
