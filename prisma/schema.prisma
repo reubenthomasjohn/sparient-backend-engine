@@ -230,3 +230,36 @@ model FileIssueCategory {
   @@map("file_issue_categories")
 }
 
+// Manually-populated lookup. Each row is an explainer video for a Connectivo issue.
+// Matched to issues_by_category[].issues[].name on the response side via ErrorKeyword.
+model Video {
+  videoId         Int      @id @default(autoincrement()) @map("video_id")
+  videoUrl        String   @unique @map("video_url") @db.VarChar(500)
+  videoTitle      String   @map("video_title") @db.VarChar(255)
+  durationSeconds Int?     @map("duration_seconds")
+  description     String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  // Auto-updated by Postgres trigger `videos_updated_at_trigger`, not Prisma's @updatedAt,
+  // since rows are populated/edited manually via SQL.
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  errorKeywords ErrorKeyword[]
+
+  @@map("videos")
+}
+
+// Keyword that maps a Connectivo issue name to a Video. Multiple keywords per video
+// (synonyms / variations). Lookups should use the LOWER(keyword) functional index
+// for case-insensitive matching.
+model ErrorKeyword {
+  id        Int      @id @default(autoincrement())
+  videoId   Int      @map("video_id")
+  keyword   String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  video Video @relation(fields: [videoId], references: [videoId], onDelete: Cascade)
+
+  @@unique([videoId, keyword])
+  @@map("error_keywords")
+}
+
