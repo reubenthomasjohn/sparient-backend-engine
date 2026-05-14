@@ -112,9 +112,25 @@ export class SyncOrchestrator {
     const fresh = await sourceClient.getFile(canvasCourseId, canvasFileId);
     if (!fresh) throw Errors.notFound('File in Canvas');
 
-    if (fresh.sizeBytes !== null && fresh.sizeBytes > SINGLE_FILE_TRIGGER_SIZE_CAP_BYTES) {
+    // Canvas occasionally omits `size` from file metadata (older imports,
+    // legacy storage, certain integrations). Without a reported size we
+    // cannot bound the download against the API Lambda's 30s budget, so
+    // fail closed and route the caller to the size-limit-free scheduled
+    // sync path. Failing open here let an arbitrarily large file stream
+    // into S3 until Lambda timed out — leaving the upload in an
+    // indeterminate state with billing already incurred.
+    const capMb = SINGLE_FILE_TRIGGER_SIZE_CAP_BYTES / 1024 / 1024;
+    if (fresh.sizeBytes === null) {
+      throw Errors.badRequest(
+        `Canvas did not report a size for file '${fresh.fileName}', so it cannot be ` +
+        `processed by the inline trigger (which must finish inside the API Lambda's ` +
+        `30s budget). Trigger a course-level sync via ` +
+        `POST /sync/institutions/${institutionId}/courses/${canvasCourseId}, which ` +
+        `has no per-file size limit.`,
+      );
+    }
+    if (fresh.sizeBytes > SINGLE_FILE_TRIGGER_SIZE_CAP_BYTES) {
       const sizeMb = (fresh.sizeBytes / 1024 / 1024).toFixed(1);
-      const capMb = SINGLE_FILE_TRIGGER_SIZE_CAP_BYTES / 1024 / 1024;
       throw Errors.badRequest(
         `File '${fresh.fileName}' is ${sizeMb} MB, which exceeds the ${capMb} MB inline trigger limit. ` +
         `Files larger than ${capMb} MB are processed by the scheduled sync (no per-file size limit). ` +
