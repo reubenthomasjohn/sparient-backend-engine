@@ -4,6 +4,7 @@ import { SourceRegistry } from '../../services/sources/SourceRegistry';
 import { ISourceClient } from '../../services/sources/ISourceClient';
 import { FileChangeDetector } from '../../services/sync/FileChangeDetector';
 import { BatchBuilder } from '../../services/sync/BatchBuilder';
+import { getEffectiveSyncConfig } from '../../services/sync/syncConfig';
 import { getBucketName } from '../../config/s3Bucket';
 import { logger } from '../../utils/logger';
 
@@ -125,7 +126,14 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
     input.canvasCourseId,
     input.force ? null : course.lastSyncedAt,
   );
-  const result = await changeDetector.detect(course, discovered);
+
+  // Pass the institution's current MIME allowlist to the detector so rows
+  // whose type is no longer in scope (institution narrowed allowedFileTypes)
+  // aren't marked deleted by accident.
+  const effectiveConfig = getEffectiveSyncConfig(institution);
+  const result = await changeDetector.detect(course, discovered, {
+    allowedMimeTypes: new Set(effectiveConfig.allowedMimeTypes),
+  });
 
   const fileIds = result.toUploadJobs.map((j) => j.sourceFileId);
 

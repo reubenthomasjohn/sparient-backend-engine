@@ -72,6 +72,11 @@ model Institution {
   syncTime     String    @default("02:00") @map("sync_time") @db.VarChar(5)
   lastSyncedAt DateTime? @map("last_synced_at")
 
+  // Per-institution behavior overrides (course excludes, file type allowlist,
+  // size cap, locked/hidden handling, course states, writeback ack gate). Null
+  // means "all defaults" — see src/services/sync/syncConfig.ts for the shape.
+  syncConfig   Json?     @map("sync_config")
+
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 
