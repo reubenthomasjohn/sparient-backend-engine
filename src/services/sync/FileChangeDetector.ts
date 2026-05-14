@@ -133,8 +133,21 @@ export class FileChangeDetector {
         { courseId: course.id, existingCount: existing.length },
       );
     } else {
-      const inScope = (mimeType: string): boolean =>
-        opts.allowedMimeTypes ? opts.allowedMimeTypes.has(mimeType) : true;
+      // Canvas returns mime types with charset/parameter suffixes for some
+      // file kinds ("text/plain; charset=utf-8", "text/csv; charset=utf-8").
+      // The bare strings in FILE_TYPE_REGISTRY (and therefore in
+      // opts.allowedMimeTypes) have no suffix. Without normalization an
+      // exact Set.has on the stored value would return false for any file
+      // whose mime type happens to carry a charset suffix, which would
+      // wrongly mark them out-of-scope and skip them from deletion
+      // detection. Match the same normalization used in
+      // SyncOrchestrator.syncFile (the only other allowlist comparison
+      // site) before consulting the set.
+      const inScope = (mimeType: string): boolean => {
+        if (!opts.allowedMimeTypes) return true;
+        const baseMime = mimeType.split(';')[0].trim().toLowerCase();
+        return opts.allowedMimeTypes.has(baseMime);
+      };
 
       const toDelete = existing.filter(
         (f) =>
