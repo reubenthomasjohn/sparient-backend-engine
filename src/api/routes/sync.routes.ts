@@ -160,6 +160,9 @@ router.post(
 // Excluded from the reset:
 //   - last_outcome='deleted' rows: Canvas has no writeback target, so sending
 //     their stale S3 bytes to Connectivo would burn billing and fail writeback.
+//   - last_outcome='permanently_failed' rows by default: these exhausted their
+//     retry budget for a reason. Pass includePermanentlyFailed=true to also
+//     reset them — matches the retry-failed endpoint's opt-in.
 //   - Rows currently referenced by a pending batch_files row: clearing
 //     batched_modified_at on those would race with BatchBuilder's atomic claim
 //     and let the next sync re-claim them into a second pending batch — Connectivo
@@ -169,6 +172,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { institutionId, courseId } = req.params;
+      const includePermanentlyFailed = String(req.query.includePermanentlyFailed) === 'true';
 
       const course = await prisma.course.findFirst({
         where: { institutionId, canvasCourseId: courseId },
@@ -185,12 +189,16 @@ router.post(
         },
       });
 
+      const excludedOutcomes: LastOutcome[] = includePermanentlyFailed
+        ? [LastOutcome.deleted]
+        : [LastOutcome.deleted, LastOutcome.permanently_failed];
+
       const { count } = await prisma.sourceFile.updateMany({
         where: {
           courseId: course.id,
           OR: [
             { lastOutcome: null },
-            { lastOutcome: { notIn: [LastOutcome.deleted] } },
+            { lastOutcome: { notIn: excludedOutcomes } },
           ],
           batchFiles: { none: { batch: { status: 'pending' } } },
         },
@@ -230,6 +238,7 @@ router.post(
         courseId,
         resetCount: count,
         skippedInFlight,
+        includePermanentlyFailed,
       });
 
       await syncOrchestrator.syncCourse(institutionId, courseId, true);
@@ -238,6 +247,7 @@ router.post(
         success: true,
         resetCount: count,
         skippedInFlight,
+        includePermanentlyFailed,
         message: 'Reprocess of all course files started',
         institutionId,
         courseId,
