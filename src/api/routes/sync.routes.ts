@@ -150,4 +150,35 @@ router.post(
   },
 );
 
+// POST /sync/institutions/:institutionId/courses/:canvasCourseId/files/:canvasFileId?force=true
+// User-driven "remediate this one file now". Runs inline (refresh from Canvas →
+// upload → batch) and returns the resulting batchId synchronously. UI polls
+// GET /batches/:batchId for completion. Defaults force=true — if the user clicked
+// "remediate", they expect a fresh batch even if Canvas content is unchanged.
+router.post(
+  '/institutions/:institutionId/courses/:canvasCourseId/files/:canvasFileId',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { institutionId, canvasCourseId, canvasFileId } = req.params;
+      // Coerce to string before equality. Express parses repeated query keys
+      // (?force=a&force=b) as arrays, which would silently fall through the
+      // `=== 'true'` check and become false — turning a forced trigger into
+      // a non-forced one without any error.
+      const rawForce = Array.isArray(req.query.force) ? req.query.force[0] : req.query.force;
+      const force = rawForce === undefined ? true : rawForce === 'true';
+
+      const result = await syncOrchestrator.syncFile(
+        institutionId,
+        canvasCourseId,
+        canvasFileId,
+        force,
+      );
+
+      res.json({ success: true, ...result });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;
