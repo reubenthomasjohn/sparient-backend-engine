@@ -6,11 +6,11 @@ import { getBucketName } from '../../config/s3Bucket';
 import { logger } from '../../utils/logger';
 import { Errors } from '../../utils/errors';
 import { SourceRegistry } from '../sources/SourceRegistry';
-import { BatchBuilder } from './BatchBuilder';
+import { requestPublisher } from '../remediation/RequestPublisher';
+import { computeFailureUpdate } from '../../utils/failure';
 import { getEffectiveSyncConfig } from './syncConfig';
 
 const sfn = new SFNClient({ region: config.aws.region });
-const batchBuilder = new BatchBuilder();
 
 // Hard endpoint-level size cap for the inline single-file trigger. The flow runs
 // in the API Lambda (30s budget); a Canvas download + S3 upload + request publish
@@ -271,23 +271,118 @@ export class SyncOrchestrator {
       );
     }
 
-    const batch = await batchBuilder.buildForCourse(institution, course, {
-      isInitialSync: false,
-      forceReprocess: force,
-      s3Bucket,
+    // Atomic single-file claim. We cannot reuse BatchBuilder.buildForCourse here:
+    //   (1) it batches every eligible file in the course, not just ours — the
+    //       caller asked to remediate one file and would be surprised by a batch
+    //       containing dozens of unrelated files; and
+    //   (2) it does not serialize with us. BatchBuilder protects against
+    //       double-batching via an optimistic `updateMany` CAS on
+    //       batched_modified_at. Our earlier transaction cleared that column to
+    //       null; if BatchBuilder runs between that commit and this call, it can
+    //       claim the file at the old s3_source_modified_at, after which our
+    //       buildForCourse claims it again at the bumped s3_source_modified_at —
+    //       same row in two pending batches, Connectivo billed twice.
+    //
+    // Inlining the claim under a fresh FOR UPDATE closes the window. The lock
+    // serializes us against any concurrent BatchBuilder.buildForCourse on the
+    // same row: if BatchBuilder beat us, we see its batch_files row and return
+    // its batch id; if we go first, BatchBuilder's updateMany blocks until our
+    // commit, after which the row is claimed (batched_modified_at set to the
+    // current s3_source_modified_at) so its CAS no longer matches.
+    const claim = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM source_files WHERE id = ${postUpload.id} FOR UPDATE`;
+
+      const inFlight = await tx.batchFile.findFirst({
+        where: { sourceFileId: postUpload.id, batch: { status: 'pending' } },
+        orderBy: { createdAt: 'desc' },
+        select: { batchId: true },
+      });
+      if (inFlight) {
+        return { kind: 'inFlight' as const, batchId: inFlight.batchId };
+      }
+
+      await tx.sourceFile.update({
+        where: { id: postUpload.id },
+        data: {
+          batchedModifiedAt: postUpload.s3SourceModifiedAt!,
+          lastOutcome: null,
+          lastFailureReason: null,
+        },
+      });
+
+      const batch = await tx.batch.create({
+        data: {
+          institutionId: institution.id,
+          courseId: course.id,
+          status: 'pending',
+          isInitialSync: false,
+          isRetry: false,
+          totalFiles: 1,
+        },
+      });
+
+      await tx.batchFile.create({
+        data: {
+          batchId: batch.id,
+          sourceFileId: postUpload.id,
+          canvasFileId: postUpload.canvasFileId,
+          s3SourceKey: postUpload.s3SourceKey!,
+          sourceModifiedAt: postUpload.s3SourceModifiedAt!,
+        },
+      });
+
+      return { kind: 'created' as const, batchId: batch.id, batch };
     });
+
+    if (claim.kind === 'inFlight') {
+      logger.info('SyncOrchestrator: single-file trigger — caught in-flight batch post-upload', {
+        institutionId, canvasCourseId, canvasFileId, batchId: claim.batchId,
+      });
+      return {
+        batchId: claim.batchId,
+        sourceFileId: postUpload.id,
+        wasAlreadyInFlight: true,
+      };
+    }
+
+    // Publish request.json outside the transaction (S3 latency is too high to
+    // hold a DB transaction open). Mirrors the rollback shape in
+    // BatchBuilder.buildForCourse: on publish failure, revert the claim and
+    // mark the batch failed so the next scheduled sync re-attempts.
+    try {
+      await requestPublisher.publish(claim.batch, institution, course, s3Bucket, force);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.error('SyncOrchestrator: request publish failed, rolling back', {
+        batchId: claim.batchId,
+        error: reason,
+      });
+      const fu = computeFailureUpdate(postUpload, `Request publish failed: ${reason}`);
+      await prisma.sourceFile.update({
+        where: { id: postUpload.id },
+        data: { ...fu, batchedModifiedAt: null },
+      });
+      await prisma.batch.update({
+        where: { id: claim.batchId },
+        data: { status: 'failed' },
+      });
+      throw Errors.badGateway(
+        `Failed to publish remediation request for '${fresh.fileName}': ${reason}. ` +
+        `The file will be retried automatically by the next scheduled sync.`,
+      );
+    }
 
     logger.info('SyncOrchestrator: single-file trigger complete', {
       institutionId,
       canvasCourseId,
       canvasFileId,
-      sourceFileId: sourceFile.id,
-      batchId: batch?.id ?? null,
+      sourceFileId: postUpload.id,
+      batchId: claim.batchId,
     });
 
     return {
-      batchId: batch?.id ?? null,
-      sourceFileId: sourceFile.id,
+      batchId: claim.batchId,
+      sourceFileId: postUpload.id,
       wasAlreadyInFlight: false,
     };
   }
