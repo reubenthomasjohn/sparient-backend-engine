@@ -14,9 +14,13 @@ export default defineConfig({
     setupFiles: ['./tests/setup-each.ts'],
     testTimeout: 20000,
     hookTimeout: 60000,
+    // The TRUNCATE in beforeEach (setup-each.ts) wipes the shared test DB,
+    // so test files MUST run sequentially — otherwise file B's TRUNCATE deletes
+    // file A's just-inserted fixtures mid-test and Prisma raises FK violations.
+    fileParallelism: false,
   },
-  // Postgres is shared state; serial execution avoids cross-test interference.
-  // In Vitest 4, pool config moved out of `test.*` to top level.
+  // Single fork process for the same reason — multiple workers would each
+  // truncate independently and stomp on each other.
   pool: 'forks',
   forks: { singleFork: true },
 });

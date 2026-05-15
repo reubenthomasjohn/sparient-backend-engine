@@ -13,8 +13,36 @@ interface BatchFixture {
   sourceFiles: { id: string; canvasFileId: string; modifiedAt: Date }[];
 }
 
+export interface CourseFixture {
+  institutionId: string;
+  courseId: string;
+  canvasCourseId: string;
+}
+
 let counter = 0;
 const uniq = () => `${Date.now()}-${counter++}`;
+
+// Bare institution + course, no source files. Caller drives the source_file
+// rows themselves (suits FileChangeDetector / BatchBuilder tests).
+export async function createCourseFixture(): Promise<CourseFixture> {
+  const institution = await prisma.institution.create({
+    data: {
+      name: 'Test Institution',
+      slug: `test-${uniq()}`,
+      sourceType: 'canvas',
+      credentials: {},
+    },
+  });
+  const canvasCourseId = `course-${uniq()}`;
+  const course = await prisma.course.create({
+    data: {
+      institutionId: institution.id,
+      canvasCourseId,
+      name: 'Test Course',
+    },
+  });
+  return { institutionId: institution.id, courseId: course.id, canvasCourseId };
+}
 
 // Create a complete batch fixture: institution, course, source_files, batch,
 // and batch_files. Returns the IDs needed to drive the test.
