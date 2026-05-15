@@ -175,17 +175,37 @@ model Batch {
   requiresReview    Int?        @map("requires_review")
   totalIssuesFound  Int?        @map("total_issues_found")
   totalIssuesFixed  Int?        @map("total_issues_fixed")
+  // Number of follow-up responses received after the first. Connectivo may retry
+  // low-quality files on its own and send additional response.json files for the
+  // same batch — we treat each as a partial update.
+  numRetries        Int         @default(0) @map("num_retries")
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @updatedAt @map("updated_at")
 
-  institution Institution @relation(fields: [institutionId], references: [id])
-  course      Course      @relation(fields: [courseId], references: [id])
-  batchFiles  BatchFile[]
+  institution    Institution     @relation(fields: [institutionId], references: [id])
+  course         Course          @relation(fields: [courseId], references: [id])
+  batchFiles     BatchFile[]
+  batchResponses BatchResponse[]
 
   @@index([institutionId])
   @@index([courseId])
   @@index([status])
   @@map("batches")
+}
+
+// One row per response.json processed for a batch. The unique s3Key gives us
+// SQS-redelivery dedup; the count of rows tells us which attempt this is.
+model BatchResponse {
+  id                String   @id @default(uuid())
+  batchId           String   @map("batch_id")
+  s3Key             String   @unique @map("s3_key") @db.VarChar(1000)
+  connectivoBatchId String?  @map("connectivo_batch_id") @db.VarChar(255)
+  processedAt       DateTime @default(now()) @map("processed_at")
+
+  batch Batch @relation(fields: [batchId], references: [id])
+
+  @@index([batchId])
+  @@map("batch_responses")
 }
 
 // A batch_file pins the exact s3_source_key + modifiedAt that was handed to Connectivo.
