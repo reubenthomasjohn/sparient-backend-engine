@@ -7,6 +7,14 @@ import { Errors } from '../../utils/errors';
 const router = Router();
 
 // POST /admin/responses/:institutionId/:courseId/:batchId
+//
+// Manual replay of a Connectivo response. Operator must have placed (or copied)
+// the response.json at `<RESPONSES_PREFIX>/<batchId>.json` in the institution
+// bucket. The dedup key is the S3 object key — since this convention differs
+// from Connectivo's own `<timestamp>_job_completed_<batchId>.json`, a replay
+// here will be treated as a new attempt and increment Batch.numRetries. If the
+// same admin replay is fired twice, the second call short-circuits silently.
+// To force a true re-process, delete the matching batch_responses row first.
 router.post(
   '/responses/:institutionId/:courseId/:batchId',
   async (req: Request, res: Response, next: NextFunction) => {
