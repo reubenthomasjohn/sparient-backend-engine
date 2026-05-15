@@ -12,7 +12,9 @@
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
-    "db:seed": "ts-node-dev --transpile-only prisma/seed.ts"
+    "db:seed": "ts-node-dev --transpile-only prisma/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "prisma": {
     "seed": "ts-node-dev --transpile-only prisma/seed.ts"
@@ -45,6 +47,8 @@
     "@types/pg": "^8.20.0",
     "prisma": "^7.7.0",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.4.5"
+    "tsx": "^4.22.0",
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.6"
   }
 }
