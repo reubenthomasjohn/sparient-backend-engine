@@ -128,14 +128,15 @@ router.post(
           remediatedS3Bucket: true,
           sourceModifiedAt: true,
           sourceFileId: true,
-          sourceFile: { select: { batchedModifiedAt: true } },
+          sourceFile: { select: { batchedModifiedAt: true, writebackState: true } },
         },
       });
       if (!batchFile) throw Errors.notFound('BatchFile');
 
       // Pre-checks mirror the worker's guards so the UI gets immediate feedback
       // instead of a silently-skipped async job. The worker re-checks under fresh
-      // state anyway — these fields don't regress, so there's no stuck-'queued' risk.
+      // state anyway, and resolves a lingering 'queued' on every skip path, so a rare
+      // post-stamp regression of these fields can't strand the UI's poll.
       if (
         batchFile.connectivoState !== 'completed' &&
         batchFile.connectivoState !== 'completed_with_warnings'
@@ -157,17 +158,39 @@ router.post(
 
       // Optimistically mark 'queued' so the UI can tell this in-flight request apart
       // from a stale terminal state on re-replace. Guarded on batchedModifiedAt so a
-      // newer batch's stamp arriving in the race window is never clobbered (count=0 →
-      // the worker's supersession guard handles it).
-      await prisma.sourceFile.updateMany({
+      // newer batch's stamp arriving in the race window between our pre-check and here
+      // is never clobbered. count=0 means exactly that race happened — treat it as the
+      // same supersession conflict the pre-check reports.
+      const priorWritebackState = batchFile.sourceFile.writebackState;
+      const { count } = await prisma.sourceFile.updateMany({
         where: {
           id: batchFile.sourceFileId,
           batchedModifiedAt: batchFile.sourceModifiedAt,
         },
         data: { writebackState: 'queued' },
       });
+      if (count === 0) {
+        throw Errors.conflict(
+          'A newer remediation has superseded this file; replace from the latest batch',
+        );
+      }
 
-      await writebackQueue.send({ batchFileId, ignoreOptIn: true });
+      try {
+        await writebackQueue.send({
+          batchFileId,
+          ignoreOptIn: true,
+          sourceFileId: batchFile.sourceFileId,
+        });
+      } catch (err) {
+        // The stamp landed but no job was enqueued. Roll it back to the prior state so
+        // the UI doesn't poll a phantom 'queued' forever. Guarded to 'queued' so we
+        // never undo a terminal state a concurrent writer may have set in the meantime.
+        await prisma.sourceFile.updateMany({
+          where: { id: batchFile.sourceFileId, writebackState: 'queued' },
+          data: { writebackState: priorWritebackState },
+        });
+        throw err;
+      }
 
       res.status(202).json({ success: true, status: 'queued', batchFileId });
     } catch (err) {

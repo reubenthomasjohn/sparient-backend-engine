@@ -60,6 +60,37 @@ describe('WritebackService.writeBack', () => {
     expect(sourceClient.replaceFile).not.toHaveBeenCalled();
   });
 
+  it('resolves a lingering queued state when connectivoState is not terminal', async () => {
+    prismaMock.batchFile.findUnique.mockResolvedValue(
+      batchFileWithRelations({ batchFile: { connectivoState: 'failed' } }) as any,
+    );
+    await service.writeBack('bf-1');
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sf-1', writebackState: 'queued' },
+      data: { writebackState: 'skipped_stale' },
+    });
+  });
+
+  it('resolves a lingering queued state when remediated S3 location is missing', async () => {
+    prismaMock.batchFile.findUnique.mockResolvedValue(
+      batchFileWithRelations({ batchFile: { remediatedS3Key: null } }) as any,
+    );
+    await service.writeBack('bf-1');
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sf-1', writebackState: 'queued' },
+      data: { writebackState: 'skipped_stale' },
+    });
+  });
+
+  it('resolves a lingering queued state via job sourceFileId when batch_file is gone', async () => {
+    prismaMock.batchFile.findUnique.mockResolvedValue(null);
+    await service.writeBack('missing', { sourceFileId: 'sf-1' });
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sf-1', writebackState: 'queued' },
+      data: { writebackState: 'skipped_stale' },
+    });
+  });
+
   it('skips when remediatedS3Key is null', async () => {
     prismaMock.batchFile.findUnique.mockResolvedValue(
       batchFileWithRelations({ batchFile: { remediatedS3Key: null } }) as any,

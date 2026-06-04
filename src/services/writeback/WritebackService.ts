@@ -13,7 +13,7 @@ import { logger } from '../../utils/logger';
 export class WritebackService {
   async writeBack(
     batchFileId: string,
-    opts: { ignoreOptIn?: boolean } = {},
+    opts: { ignoreOptIn?: boolean; sourceFileId?: string } = {},
   ): Promise<void> {
     const batchFile = await prisma.batchFile.findUnique({
       where: { id: batchFileId },
@@ -24,6 +24,9 @@ export class WritebackService {
 
     if (!batchFile) {
       logger.warn('Writeback: batch_file not found, dropping', { batchFileId });
+      // The batch_file was deleted between the manual replace enqueue and now. Use
+      // the source_file id carried on the job to resolve a lingering 'queued' stamp.
+      if (opts.sourceFileId) await this.resolveQueued(opts.sourceFileId);
       return;
     }
 
@@ -41,11 +44,13 @@ export class WritebackService {
         batchFileId,
         connectivoState: batchFile.connectivoState,
       });
+      await this.resolveQueued(sourceFile.id);
       return;
     }
 
     if (!batchFile.remediatedS3Key || !batchFile.remediatedS3Bucket) {
       logger.info('Writeback: skip — no remediated S3 location', { batchFileId });
+      await this.resolveQueued(sourceFile.id);
       return;
     }
 
@@ -68,14 +73,10 @@ export class WritebackService {
         sourceModifiedAt: batchFile.sourceModifiedAt,
         batchedModifiedAt: sourceFile.batchedModifiedAt,
       });
-      // If a manual replace optimistically marked this 'queued' but a newer batch
-      // claimed the source_file before we ran, resolve the lingering state so the
-      // UI's poll terminates. Guarded to 'queued' so we never touch a terminal
-      // state owned by the newer batch — a no-op on the automatic path.
-      await prisma.sourceFile.updateMany({
-        where: { id: sourceFile.id, writebackState: 'queued' },
-        data: { writebackState: 'skipped_stale' },
-      });
+      // A manual replace may have optimistically marked this 'queued'; a newer batch
+      // claimed the source_file before we ran. Resolve the lingering state so the
+      // UI's poll terminates.
+      await this.resolveQueued(sourceFile.id);
       return;
     }
 
@@ -153,6 +154,17 @@ export class WritebackService {
       sourceFileId: sourceFile.id,
       canvasFileId: result.file.externalId,
       newModifiedAt: result.file.modifiedAt,
+    });
+  }
+
+  // Resolves a lingering optimistic 'queued' stamp (set by the manual replace route)
+  // to a terminal state so the UI's poll always finishes. Called on every skip path
+  // that would otherwise return without stamping. Guarded to 'queued' so it never
+  // touches a terminal state — a no-op on the automatic writeback path.
+  private async resolveQueued(sourceFileId: string): Promise<void> {
+    await prisma.sourceFile.updateMany({
+      where: { id: sourceFileId, writebackState: 'queued' },
+      data: { writebackState: 'skipped_stale' },
     });
   }
 }

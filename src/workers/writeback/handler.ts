@@ -8,7 +8,10 @@ import { logger } from '../../utils/logger';
 // so SQS can redrive — DLQ catches terminal failures.
 export async function handleWritebackJob(job: WritebackJob): Promise<void> {
   try {
-    await writebackService.writeBack(job.batchFileId, { ignoreOptIn: job.ignoreOptIn });
+    await writebackService.writeBack(job.batchFileId, {
+      ignoreOptIn: job.ignoreOptIn,
+      sourceFileId: job.sourceFileId,
+    });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     logger.error('Writeback: job failed', { batchFileId: job.batchFileId, error: reason });
