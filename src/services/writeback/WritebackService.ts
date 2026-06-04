@@ -11,7 +11,10 @@ import { logger } from '../../utils/logger';
 // re-uploads the same bytes. The post-write update of writebackState +
 // lastWritebackModifiedAt is also idempotent.
 export class WritebackService {
-  async writeBack(batchFileId: string): Promise<void> {
+  async writeBack(
+    batchFileId: string,
+    opts: { ignoreOptIn?: boolean } = {},
+  ): Promise<void> {
     const batchFile = await prisma.batchFile.findUnique({
       where: { id: batchFileId },
       include: {
@@ -46,8 +49,10 @@ export class WritebackService {
       return;
     }
 
+    // ignoreOptIn is set by the user-driven replace endpoint: a manual click is
+    // explicit consent, so it bypasses the gate that governs *automatic* writeback.
     const optedIn = course.writebackOptIn ?? institution.writebackOptIn;
-    if (!optedIn) {
+    if (!optedIn && !opts.ignoreOptIn) {
       logger.info('Writeback: skip — opt-out', { batchFileId, courseId: course.id });
       return;
     }
@@ -62,6 +67,14 @@ export class WritebackService {
         batchFileId,
         sourceModifiedAt: batchFile.sourceModifiedAt,
         batchedModifiedAt: sourceFile.batchedModifiedAt,
+      });
+      // If a manual replace optimistically marked this 'queued' but a newer batch
+      // claimed the source_file before we ran, resolve the lingering state so the
+      // UI's poll terminates. Guarded to 'queued' so we never touch a terminal
+      // state owned by the newer batch — a no-op on the automatic path.
+      await prisma.sourceFile.updateMany({
+        where: { id: sourceFile.id, writebackState: 'queued' },
+        data: { writebackState: 'skipped_stale' },
       });
       return;
     }
@@ -91,7 +104,11 @@ export class WritebackService {
       await prisma.sourceFile.updateMany({
         where: {
           id: sourceFile.id,
-          OR: [{ writebackState: null }, { writebackState: 'failed' }],
+          OR: [
+            { writebackState: null },
+            { writebackState: 'failed' },
+            { writebackState: 'queued' },
+          ],
         },
         data: { writebackState: 'skipped_stale' },
       });

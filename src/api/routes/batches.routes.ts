@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { BatchStatus } from '@prisma/client';
 import prisma from '../../db/client';
 import { Errors } from '../../utils/errors';
+import { writebackQueue } from '../../queue';
 
 const router = Router();
 
@@ -100,6 +101,75 @@ router.get(
       });
 
       res.json({ success: true, data: batches });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /batches/:batchId/files/:batchFileId/replace
+// User-driven "push this remediated file back to Canvas now". Enqueues a writeback
+// job with ignoreOptIn=true — a manual click is explicit consent, so it bypasses the
+// institution/course auto opt-in gate. Async: stamps writebackState='queued' and
+// returns 202; the worker re-checks every guard (Canvas drift, supersession) and
+// stamps the terminal state. UI polls GET /batches/:batchId/files for
+// sourceFile.writebackState (queued → written | skipped_stale | failed).
+router.post(
+  '/:batchId/files/:batchFileId/replace',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { batchId, batchFileId } = req.params;
+
+      const batchFile = await prisma.batchFile.findFirst({
+        where: { id: batchFileId, batchId },
+        select: {
+          connectivoState: true,
+          remediatedS3Key: true,
+          remediatedS3Bucket: true,
+          sourceModifiedAt: true,
+          sourceFileId: true,
+          sourceFile: { select: { batchedModifiedAt: true } },
+        },
+      });
+      if (!batchFile) throw Errors.notFound('BatchFile');
+
+      // Pre-checks mirror the worker's guards so the UI gets immediate feedback
+      // instead of a silently-skipped async job. The worker re-checks under fresh
+      // state anyway — these fields don't regress, so there's no stuck-'queued' risk.
+      if (
+        batchFile.connectivoState !== 'completed' &&
+        batchFile.connectivoState !== 'completed_with_warnings'
+      ) {
+        throw Errors.conflict('File has no completed remediation to write back');
+      }
+      if (!batchFile.remediatedS3Key || !batchFile.remediatedS3Bucket) {
+        throw Errors.conflict('File has no remediated output to write back');
+      }
+      if (
+        batchFile.sourceFile.batchedModifiedAt === null ||
+        batchFile.sourceFile.batchedModifiedAt.getTime() !==
+          batchFile.sourceModifiedAt.getTime()
+      ) {
+        throw Errors.conflict(
+          'A newer remediation has superseded this file; replace from the latest batch',
+        );
+      }
+
+      // Optimistically mark 'queued' so the UI can tell this in-flight request apart
+      // from a stale terminal state on re-replace. Guarded on batchedModifiedAt so a
+      // newer batch's stamp arriving in the race window is never clobbered (count=0 →
+      // the worker's supersession guard handles it).
+      await prisma.sourceFile.updateMany({
+        where: {
+          id: batchFile.sourceFileId,
+          batchedModifiedAt: batchFile.sourceModifiedAt,
+        },
+        data: { writebackState: 'queued' },
+      });
+
+      await writebackQueue.send({ batchFileId, ignoreOptIn: true });
+
+      res.status(202).json({ success: true, status: 'queued', batchFileId });
     } catch (err) {
       next(err);
     }

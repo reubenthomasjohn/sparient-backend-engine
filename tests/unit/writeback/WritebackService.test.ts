@@ -122,6 +122,20 @@ describe('WritebackService.writeBack', () => {
     expect(sourceClient.replaceFile).toHaveBeenCalledOnce();
   });
 
+  it('proceeds despite opt-out when ignoreOptIn is set (manual replace path)', async () => {
+    prismaMock.batchFile.findUnique.mockResolvedValue(
+      batchFileWithRelations({
+        institution: { writebackOptIn: false },
+        course: { writebackOptIn: null },
+      }) as any,
+    );
+    sourceClient.replaceFile.mockResolvedValue({ status: 'skipped', reason: 'modified' });
+
+    await service.writeBack('bf-1', { ignoreOptIn: true });
+
+    expect(sourceClient.replaceFile).toHaveBeenCalledOnce();
+  });
+
   it('skips on supersession (newer batch claimed the source_file)', async () => {
     prismaMock.batchFile.findUnique.mockResolvedValue(
       batchFileWithRelations({
@@ -130,6 +144,24 @@ describe('WritebackService.writeBack', () => {
       }) as any,
     );
     await service.writeBack('bf-1');
+    expect(sourceClient.replaceFile).not.toHaveBeenCalled();
+  });
+
+  it('resolves a lingering queued state to skipped_stale on supersession', async () => {
+    prismaMock.batchFile.findUnique.mockResolvedValue(
+      batchFileWithRelations({
+        batchFile: { sourceModifiedAt: new Date('2026-04-01') },
+        sourceFile: { batchedModifiedAt: new Date('2026-04-05') }, // newer batch
+      }) as any,
+    );
+
+    await service.writeBack('bf-1', { ignoreOptIn: true });
+
+    // Guarded to 'queued' so it never clobbers the newer batch's terminal state.
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sf-1', writebackState: 'queued' },
+      data: { writebackState: 'skipped_stale' },
+    });
     expect(sourceClient.replaceFile).not.toHaveBeenCalled();
   });
 
@@ -169,7 +201,11 @@ describe('WritebackService.writeBack', () => {
     expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'sf-1',
-        OR: [{ writebackState: null }, { writebackState: 'failed' }],
+        OR: [
+          { writebackState: null },
+          { writebackState: 'failed' },
+          { writebackState: 'queued' },
+        ],
       },
       data: { writebackState: 'skipped_stale' },
     });

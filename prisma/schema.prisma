@@ -28,6 +28,7 @@ enum WritebackState {
   written
   skipped_stale
   failed
+  queued
 }
 
 enum BatchStatus {

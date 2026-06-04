@@ -15,7 +15,7 @@ describe('handleWritebackJob', () => {
   it('passes the batchFileId straight through on success', async () => {
     vi.mocked(writebackService.writeBack).mockResolvedValue(undefined);
     await handleWritebackJob({ batchFileId: 'bf-1' });
-    expect(writebackService.writeBack).toHaveBeenCalledWith('bf-1');
+    expect(writebackService.writeBack).toHaveBeenCalledWith('bf-1', { ignoreOptIn: undefined });
     expect(prismaMock.sourceFile.updateMany).not.toHaveBeenCalled();
   });
 
@@ -35,10 +35,20 @@ describe('handleWritebackJob', () => {
     expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'sf-1',
-        OR: [{ writebackState: null }, { writebackState: 'failed' }],
+        OR: [
+          { writebackState: null },
+          { writebackState: 'failed' },
+          { writebackState: 'queued' },
+        ],
       },
       data: { writebackState: 'failed' },
     });
+  });
+
+  it('forwards ignoreOptIn from the job to the service (manual replace path)', async () => {
+    vi.mocked(writebackService.writeBack).mockResolvedValue(undefined);
+    await handleWritebackJob({ batchFileId: 'bf-1', ignoreOptIn: true });
+    expect(writebackService.writeBack).toHaveBeenCalledWith('bf-1', { ignoreOptIn: true });
   });
 
   it('swallows secondary DB errors during failure recording (still rethrows the original)', async () => {
