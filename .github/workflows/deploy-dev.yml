@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'tests/**'
       - 'prisma/**'
       - 'terraform/**'
       - 'Dockerfile.lambda'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
+      - 'vitest.config.ts'
       - '.github/workflows/deploy-dev.yml'
   workflow_dispatch: {}
 
@@ -31,14 +33,45 @@ env:
   #   NEON_API_KEY     = napi_...
 
 jobs:
+  # 0. Tests + type check (gates everything else)
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+        run: npx prisma generate
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests
+        run: npm run test:integration
+
   # 1. Terraform
   terraform:
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       ecr_api:             ${{ steps.ecr.outputs.api }}
       ecr_discovery:       ${{ steps.ecr.outputs.discovery }}
       ecr_course_workflow: ${{ steps.ecr.outputs.course_workflow }}
       ecr_responses:       ${{ steps.ecr.outputs.responses }}
+      ecr_writeback:       ${{ steps.ecr.outputs.writeback }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +104,7 @@ jobs:
           echo "discovery=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-discovery"]')" >> "$GITHUB_OUTPUT"
           echo "course_workflow=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-course-workflow"]')" >> "$GITHUB_OUTPUT"
           echo "responses=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-responses"]')" >> "$GITHUB_OUTPUT"
+          echo "writeback=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-writeback"]')" >> "$GITHUB_OUTPUT"
 
   # 2. Prisma migrations
   migrate:
@@ -134,6 +168,9 @@ jobs:
           - name: responses
             entry: workers/responses/lambda
             ecr_output: ecr_responses
+          - name: writeback
+            entry: workers/writeback/lambda
+            ecr_output: ecr_writeback
     steps:
       - uses: actions/checkout@v4
 
@@ -174,6 +211,8 @@ jobs:
             ecr_output: ecr_course_workflow
           - function: sparient-dev-responses
             ecr_output: ecr_responses
+          - function: sparient-dev-writeback
+            ecr_output: ecr_writeback
     steps:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4

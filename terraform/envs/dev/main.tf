@@ -203,6 +203,7 @@ locals {
     AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
     DATABASE_URL                        = neon_project.this.connection_uri
     SQS_DISCOVERY_URL                   = module.queues.discovery_queue_url
+    SQS_WRITEBACK_URL                   = module.queues.writeback_queue_url
     SQS_RESPONSES_QUEUE_ARN             = aws_sqs_queue.responses.arn
     QUEUE_START_CONSUMERS               = "false"
   }
@@ -262,6 +263,24 @@ module "responses_worker" {
   queue_url       = aws_sqs_queue.responses.url
   dlq_arn         = aws_sqs_queue.responses_dlq.arn
   max_concurrency = 5
+  role_arn        = aws_iam_role.lambda_exec.arn
+  env             = local.common_env
+}
+
+# Writeback: RemediationService → SQS → Lambda → Canvas. Concurrency capped low
+# to respect Canvas's rate limits (file uploads are the most rate-limited endpoint).
+# Timeout capped at 150s so queue visibility (900s) keeps the AWS-recommended ≥ 6×
+# ratio — Canvas file replace is typically sub-30s, 150s is generous headroom.
+module "writeback_worker" {
+  source          = "../../modules/lambda-worker"
+  name_prefix     = var.name_prefix
+  worker_name     = "writeback"
+  ecr_repo_url    = module.ecr.repo_urls["sparient-writeback"]
+  queue_arn       = module.queues.writeback_queue_arn
+  queue_url       = module.queues.writeback_queue_url
+  dlq_arn         = module.queues.writeback_dlq_arn
+  max_concurrency = var.writeback_max_concurrency
+  timeout_seconds = 150
   role_arn        = aws_iam_role.lambda_exec.arn
   env             = local.common_env
 }

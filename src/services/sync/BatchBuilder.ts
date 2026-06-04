@@ -62,6 +62,11 @@ export class BatchBuilder {
             batchedModifiedAt: file.s3SourceModifiedAt!,
             lastOutcome: null,
             lastFailureReason: null,
+            // Reset writeback state — the previous values refer to an older
+            // version. Without this reset, a 'skipped_stale' or 'written' from a
+            // prior cycle would inhibit the new cycle's writeback enqueue.
+            writebackState: null,
+            lastWritebackModifiedAt: null,
           },
         });
         if (count === 1) claimed.push(file);
@@ -177,6 +182,10 @@ export class BatchBuilder {
           batchedModifiedAt: sourceFile.s3SourceModifiedAt!,
           lastOutcome: null,
           lastFailureReason: null,
+          // Reset writeback state — same reason as the buildForCourse path:
+          // prior 'skipped_stale' / 'written' refers to an older version.
+          writebackState: null,
+          lastWritebackModifiedAt: null,
         },
       });
 

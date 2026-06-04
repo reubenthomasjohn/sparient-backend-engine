@@ -1,6 +1,6 @@
 # Terraform
 
-Deploys the engine to AWS: Neon Postgres, SQS, ECR, 4 Lambdas (api, discovery, course-workflow, responses),
+Deploys the engine to AWS: Neon Postgres, SQS, ECR, 5 Lambdas (api, discovery, course-workflow, responses, writeback),
 Step Functions, API Gateway HTTP API, and an EventBridge tick (every 15 min).
 
 ## Layout
@@ -12,10 +12,10 @@ terraform/
 └── modules/
     ├── networking/   # VPC (unused in dev — reserved for prod RDS setup)
     ├── database/     # RDS + RDS Proxy (unused in dev — reserved for prod)
-    ├── queues/       # discovery SQS queue + DLQ
-    ├── ecr/          # 4 ECR repos with lifecycle "keep last 5"
+    ├── queues/       # discovery + writeback SQS queues + DLQs
+    ├── ecr/          # 5 ECR repos with lifecycle "keep last 5"
     ├── lambda-api/   # api Lambda + API Gateway HTTP API
-    ├── lambda-worker/# generic SQS-triggered worker Lambda (discovery, responses)
+    ├── lambda-worker/# generic SQS-triggered worker Lambda (discovery, responses, writeback)
     └── schedule/     # EventBridge rule → SQS (tick every 15 min)
 ```
 
@@ -44,7 +44,7 @@ ECR_BASE=882884689403.dkr.ecr.us-east-2.amazonaws.com
 aws ecr get-login-password --region us-east-2 --profile sparient | \
   docker login --username AWS --password-stdin $ECR_BASE
 docker pull public.ecr.aws/lambda/nodejs:20
-for repo in sparient-api sparient-discovery sparient-course-workflow sparient-responses; do
+for repo in sparient-api sparient-discovery sparient-course-workflow sparient-responses sparient-writeback; do
   docker tag public.ecr.aws/lambda/nodejs:20 $ECR_BASE/$repo:bootstrap
   docker push $ECR_BASE/$repo:bootstrap
 done
@@ -70,9 +70,30 @@ npm run db:seed
 curl "$(terraform output -raw api_endpoint)/health"
 ```
 
+## Adding a new Lambda
+
+Whenever a new ECR repo is added (e.g. when `sparient-writeback` was added for the
+writeback feature), the first `terraform apply` will fail at the `aws_lambda_function`
+step because the `:bootstrap` tag doesn't exist on the new repo. Run these once
+before pushing to `main`:
+
+```bash
+ECR_BASE=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-2.amazonaws.com
+aws ecr get-login-password --region us-east-2 --profile sparient | \
+  docker login --username AWS --password-stdin $ECR_BASE
+terraform apply -target=module.ecr   # creates the new repo
+docker pull public.ecr.aws/lambda/nodejs:20
+docker tag public.ecr.aws/lambda/nodejs:20 $ECR_BASE/sparient-<new-name>:bootstrap
+docker push $ECR_BASE/sparient-<new-name>:bootstrap
+terraform apply                       # finishes creating the Lambda
+```
+
+After this, CI's normal flow (build → push real image → `aws lambda update-function-code`)
+takes over.
+
 ## Updating
 
-- **Code + infra:** push to `main`. CI runs terraform apply → prisma migrate → build 4 images → update 4 Lambdas.
+- **Code + infra:** push to `main`. CI runs tests → terraform apply → prisma migrate → build 5 images → update 5 Lambdas.
 - **Manual deploy:** Actions tab → "Deploy (dev)" → "Run workflow".
 - **Local fallback** (skip CI): `docker build` + `docker push` + `aws lambda update-function-code`.
 
@@ -83,7 +104,7 @@ curl "$(terraform output -raw api_endpoint)/health"
 | Neon Postgres (free tier) | $0 |
 | Step Functions | ~$0 |
 | SQS / Lambda / API GW / EventBridge | free tier |
-| ECR storage (4 repos) | ~$0.10 |
+| ECR storage (5 repos) | ~$0.13 |
 | CloudWatch Logs | ~$1 |
 | **Total** | **~$1/mo** |
 

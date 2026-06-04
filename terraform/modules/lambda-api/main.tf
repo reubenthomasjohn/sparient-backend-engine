@@ -1,8 +1,8 @@
 # API Lambda + API Gateway HTTP API (cheaper and simpler than REST API).
 # 1 unit of provisioned concurrency keeps one instance warm — Connectivo polls land warm.
 
-variable "name_prefix"        { type = string }
-variable "ecr_repo_url"       { type = string }
+variable "name_prefix" { type = string }
+variable "ecr_repo_url" { type = string }
 variable "vpc_subnet_ids" {
   type    = list(string)
   default = []
@@ -12,8 +12,8 @@ variable "security_group_ids" {
   type    = list(string)
   default = []
 }
-variable "env"                { type = map(string) }
-variable "role_arn"           { type = string }
+variable "env" { type = map(string) }
+variable "role_arn" { type = string }
 
 variable "timeout_seconds" {
   type    = number
@@ -89,7 +89,7 @@ resource "aws_apigatewayv2_integration" "lambda" {
   integration_type       = "AWS_PROXY"
   integration_method     = "POST"
   payload_format_version = "2.0"
-  integration_uri = var.provisioned_concurrency > 0 ? aws_lambda_alias.live[0].invoke_arn : aws_lambda_function.this.invoke_arn
+  integration_uri        = var.provisioned_concurrency > 0 ? aws_lambda_alias.live[0].invoke_arn : aws_lambda_function.this.invoke_arn
 }
 
 resource "aws_apigatewayv2_route" "any" {
@@ -119,6 +119,6 @@ resource "aws_lambda_permission" "api_gw" {
   source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
 }
 
-output "api_endpoint"  { value = aws_apigatewayv2_api.this.api_endpoint }
+output "api_endpoint" { value = aws_apigatewayv2_api.this.api_endpoint }
 output "function_name" { value = aws_lambda_function.this.function_name }
-output "function_arn"  { value = aws_lambda_function.this.arn }
+output "function_arn" { value = aws_lambda_function.this.arn }

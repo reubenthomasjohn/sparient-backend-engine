@@ -33,10 +33,12 @@ export async function handleResponseJob(job: ResponseJob): Promise<void> {
 
   // Use external_batch_id from inside the payload (our batch ID) — don't parse from filename.
   // Connectivo's filename format varies (e.g. <timestamp>_job_completed_<batchId>.json).
+  // Zod's z.string() accepts "" so we have to re-check here; throw on empty so the
+  // message hits the DLQ instead of being silently ACKed without ever updating a batch.
   const batchId = result.data.batch.external_batch_id;
   if (!batchId) {
-    logger.warn('Responses: no external_batch_id in response', { key: job.key });
-    return;
+    logger.error('Responses: empty external_batch_id, routing to DLQ', { key: job.key });
+    throw new Error(`Connectivo response has empty external_batch_id (key=${job.key})`);
   }
 
   logger.info('Responses: processing', { batchId, key: job.key });

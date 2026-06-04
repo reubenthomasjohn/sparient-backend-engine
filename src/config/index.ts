@@ -31,6 +31,7 @@ const configSchema = z.object({
   queue: z.object({
     discoveryUrl: z.string().optional(),
     responsesQueueArn: z.string().optional(),
+    writebackUrl: z.string().optional(),
     startConsumers: z.coerce.boolean().default(true),
   }),
 });
@@ -56,6 +57,7 @@ const parsed = configSchema.safeParse({
   queue: {
     discoveryUrl: process.env.SQS_DISCOVERY_URL,
     responsesQueueArn: process.env.SQS_RESPONSES_QUEUE_ARN,
+    writebackUrl: process.env.SQS_WRITEBACK_URL,
     startConsumers: process.env.QUEUE_START_CONSUMERS,
   },
 });

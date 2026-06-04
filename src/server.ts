@@ -2,8 +2,9 @@ import app from './app';
 import { config } from './config';
 import { logger } from './utils/logger';
 import prisma from './db/client';
-import { discoveryQueue } from './queue';
+import { discoveryQueue, writebackQueue } from './queue';
 import { handleDiscoveryJob } from './workers/discovery/handler';
+import { handleWritebackJob } from './workers/writeback/handler';
 
 async function bootstrap(): Promise<void> {
   await prisma.$connect();
@@ -20,12 +21,14 @@ async function bootstrap(): Promise<void> {
   // via the SyncOrchestrator's fallback path.
   if (config.queue.startConsumers) {
     discoveryQueue.startConsumer(handleDiscoveryJob);
+    writebackQueue.startConsumer(handleWritebackJob);
   }
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down`);
     server.close(async () => {
       await discoveryQueue.stop();
+      await writebackQueue.stop();
       await prisma.$disconnect();
       logger.info('Shutdown complete');
       process.exit(0);

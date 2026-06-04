@@ -5,9 +5,9 @@
 # Swap to Aurora later by replacing the aws_db_instance with aws_rds_cluster +
 # aws_rds_cluster_instance — the outputs stay the same.
 
-variable "name_prefix"  { type = string }
-variable "vpc_id"       { type = string }
-variable "subnet_ids"   { type = list(string) }
+variable "name_prefix" { type = string }
+variable "vpc_id" { type = string }
+variable "subnet_ids" { type = list(string) }
 variable "lambda_sg_id" { type = string } # the shared Lambda SG that can reach the proxy
 
 variable "instance_class" {
@@ -96,24 +96,24 @@ resource "aws_db_parameter_group" "this" {
 }
 
 resource "aws_db_instance" "this" {
-  identifier             = "${var.name_prefix}-db"
-  engine                 = "postgres"
-  engine_version         = "16"
-  instance_class         = var.instance_class
-  allocated_storage      = var.allocated_storage_gb
-  storage_type           = "gp3"
-  storage_encrypted      = true
-  db_name                = var.db_name
-  username               = var.db_username
-  password               = random_password.db.result
-  db_subnet_group_name   = aws_db_subnet_group.this.name
-  vpc_security_group_ids = [aws_security_group.rds.id]
-  parameter_group_name   = aws_db_parameter_group.this.name
-  skip_final_snapshot    = true # dev
-  publicly_accessible    = false
-  multi_az               = false
+  identifier              = "${var.name_prefix}-db"
+  engine                  = "postgres"
+  engine_version          = "16"
+  instance_class          = var.instance_class
+  allocated_storage       = var.allocated_storage_gb
+  storage_type            = "gp3"
+  storage_encrypted       = true
+  db_name                 = var.db_name
+  username                = var.db_username
+  password                = random_password.db.result
+  db_subnet_group_name    = aws_db_subnet_group.this.name
+  vpc_security_group_ids  = [aws_security_group.rds.id]
+  parameter_group_name    = aws_db_parameter_group.this.name
+  skip_final_snapshot     = true # dev
+  publicly_accessible     = false
+  multi_az                = false
   backup_retention_period = 1
-  apply_immediately      = true
+  apply_immediately       = true
 }
 
 # Proxy needs the DB credentials in Secrets Manager (RDS Proxy requirement —
@@ -149,7 +149,7 @@ resource "aws_iam_role" "proxy" {
 
 data "aws_iam_policy_document" "proxy" {
   statement {
-    actions = ["secretsmanager:GetSecretValue"]
+    actions   = ["secretsmanager:GetSecretValue"]
     resources = [aws_secretsmanager_secret.db_creds.arn]
   }
 }
@@ -189,8 +189,8 @@ resource "aws_db_proxy_target" "this" {
   target_group_name      = aws_db_proxy_default_target_group.this.name
 }
 
-output "proxy_endpoint"     { value = aws_db_proxy.this.endpoint }
-output "db_name"            { value = var.db_name }
-output "db_username"        { value = var.db_username }
-output "db_password_param"  { value = aws_ssm_parameter.db_password.name }
-output "rds_endpoint"       { value = aws_db_instance.this.endpoint } # for one-off migrations via bastion/SSM
+output "proxy_endpoint" { value = aws_db_proxy.this.endpoint }
+output "db_name" { value = var.db_name }
+output "db_username" { value = var.db_username }
+output "db_password_param" { value = aws_ssm_parameter.db_password.name }
+output "rds_endpoint" { value = aws_db_instance.this.endpoint } # for one-off migrations via bastion/SSM

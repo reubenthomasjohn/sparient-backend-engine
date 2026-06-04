@@ -2,10 +2,15 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { logger } from '../utils/logger';
 
-// Ensure sslmode=verify-full to silence the pg v8 deprecation warning about
-// 'require' being treated as 'verify-full' (which is what we want anyway).
+// Default to sslmode=verify-full for prod safety, but respect explicit overrides
+// — local docker/testcontainers Postgres has no SSL, so callers can pass
+// `?sslmode=disable` without us silently re-enabling it. We also upgrade the
+// legacy 'require' to 'verify-full' to silence the pg v8 deprecation warning.
 const dbUrl = new URL(process.env.DATABASE_URL!);
-dbUrl.searchParams.set('sslmode', 'verify-full');
+const currentSslmode = dbUrl.searchParams.get('sslmode');
+if (currentSslmode === null || currentSslmode === 'require') {
+  dbUrl.searchParams.set('sslmode', 'verify-full');
+}
 
 const adapter = new PrismaPg({
   connectionString: dbUrl.toString(),

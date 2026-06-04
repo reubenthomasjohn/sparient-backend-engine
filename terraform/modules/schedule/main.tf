@@ -2,7 +2,7 @@
 # on the discovery queue. The discovery Lambda handles both sweep and per-institution
 # discover messages.
 
-variable "name_prefix"      { type = string }
+variable "name_prefix" { type = string }
 variable "target_queue_arn" { type = string }
 variable "target_queue_url" { type = string }
 
