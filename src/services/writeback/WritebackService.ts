@@ -106,13 +106,30 @@ export class WritebackService {
     // Success: stamp the modifiedAt Canvas returned for the new upload. The
     // FileChangeDetector consults this exact value to skip our own writebacks
     // on the next discover pass.
-    await prisma.sourceFile.update({
-      where: { id: sourceFile.id },
+    //
+    // Guarded by batchedModifiedAt so a slow writer for an older batch doesn't
+    // clobber a newer batch's stamp backwards. A no-op here means a newer cycle
+    // already advanced past the version we just uploaded; the bytes are still in
+    // Canvas (replace is idempotent) but the bookkeeping is the newer cycle's.
+    const { count } = await prisma.sourceFile.updateMany({
+      where: {
+        id: sourceFile.id,
+        batchedModifiedAt: batchFile.sourceModifiedAt,
+      },
       data: {
         writebackState: 'written',
         lastWritebackModifiedAt: result.file.modifiedAt,
       },
     });
+
+    if (count === 0) {
+      logger.warn('Writeback: succeeded but stamp skipped — newer batch already claimed source_file', {
+        batchFileId,
+        sourceFileId: sourceFile.id,
+        canvasFileId: result.file.externalId,
+      });
+      return;
+    }
 
     logger.info('Writeback: written to Canvas', {
       batchFileId,

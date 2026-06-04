@@ -83,7 +83,7 @@ describe('RemediationService.handleResults integration', () => {
     const p = payload(batch.id);
     p.folders[0].files[0].custom_fields.file_id = sf.id;
 
-    await service.handleResults(batch.id, p);
+    await service.handleResults(batch.id, p, `responses/${batch.id}-1.json`);
 
     const refreshed = await prisma.batch.findUniqueOrThrow({ where: { id: batch.id } });
     expect(refreshed.status).toBe('completed');
@@ -93,6 +93,8 @@ describe('RemediationService.handleResults integration', () => {
     expect(bf.connectivoState).toBe('completed');
     expect(bf.qualityLabel).toBe('Good');
     expect(bf.remediatedS3Key).toBe('connectivo-remediated/101/cf-1.pdf');
+    // Bucket comes from the parsed remediated_path, not batch.requestS3Bucket.
+    expect(bf.remediatedS3Bucket).toBe('sparient-int');
 
     const sfRefreshed = await prisma.sourceFile.findUniqueOrThrow({ where: { id: sf.id } });
     expect(sfRefreshed.lastOutcome).toBe('completed');
@@ -106,7 +108,7 @@ describe('RemediationService.handleResults integration', () => {
     const p = payload(batch.id);
     p.folders = []; // remove all files
 
-    await service.handleResults(batch.id, p);
+    await service.handleResults(batch.id, p, `responses/${batch.id}-1.json`);
 
     const bf = await prisma.batchFile.findFirstOrThrow({ where: { batchId: batch.id } });
     expect(bf.connectivoState).toBe('failed');
@@ -117,18 +119,22 @@ describe('RemediationService.handleResults integration', () => {
     expect(writebackQueue.send).not.toHaveBeenCalled();
   });
 
-  it('is idempotent on re-delivery for an already-terminal batch', async () => {
+  it('is idempotent on re-delivery (same s3 key → AlreadyProcessedError → dedupe filter)', async () => {
     const { batch, sf } = await setupBatch();
     const p = payload(batch.id);
     p.folders[0].files[0].custom_fields.file_id = sf.id;
 
-    await service.handleResults(batch.id, p);
+    // SQS at-least-once: same S3 key delivered twice. The unique constraint on
+    // batch_responses(s3_key) catches the redrive and routes the second call
+    // into the AlreadyProcessedError crash-recovery branch.
+    const responseKey = `responses/${batch.id}-redelivered.json`;
+
+    await service.handleResults(batch.id, p, responseKey);
     expect(writebackQueue.send).toHaveBeenCalledOnce();
     vi.mocked(writebackQueue.send).mockClear();
 
-    // Simulate the worker having already written-back. Per design, the dedupe
-    // filter uses lastWritebackModifiedAt > sourceModifiedAt — so we set a stamp
-    // strictly later than the batch_file's sourceModifiedAt.
+    // Simulate the worker having already written-back. Dedupe filter checks
+    // lastWritebackModifiedAt > sourceModifiedAt strictly.
     await prisma.sourceFile.update({
       where: { id: sf.id },
       data: {
@@ -137,23 +143,43 @@ describe('RemediationService.handleResults integration', () => {
       },
     });
 
-    // Re-delivery: same payload again
-    await service.handleResults(batch.id, p);
+    // Re-delivery with the SAME s3 key. Should not throw and not re-enqueue.
+    await service.handleResults(batch.id, p, responseKey);
 
-    // No re-enqueue this time — dedupe fired.
     expect(writebackQueue.send).not.toHaveBeenCalled();
   });
 
-  it('writes per-file outcomes inside one transaction (no partial state on later failure)', async () => {
+  it('processes a follow-up retry response (different s3 key → second tx commits)', async () => {
+    const { batch, sf } = await setupBatch();
+    const p1 = payload(batch.id);
+    p1.folders[0].files[0].custom_fields.file_id = sf.id;
+    p1.folders[0].files[0].quality_label = 'RequiresReview';
+
+    await service.handleResults(batch.id, p1, `responses/${batch.id}-first.json`);
+
+    let bf = await prisma.batchFile.findFirstOrThrow({ where: { batchId: batch.id } });
+    expect(bf.qualityLabel).toBe('RequiresReview');
+
+    // Second response with a DIFFERENT s3 key — Connectivo's voluntary retry.
+    const p2 = payload(batch.id);
+    p2.folders[0].files[0].custom_fields.file_id = sf.id;
+    p2.folders[0].files[0].quality_label = 'Excellent';
+
+    await service.handleResults(batch.id, p2, `responses/${batch.id}-retry.json`);
+
+    bf = await prisma.batchFile.findFirstOrThrow({ where: { batchId: batch.id } });
+    expect(bf.qualityLabel).toBe('Excellent');
+
+    const refreshed = await prisma.batch.findUniqueOrThrow({ where: { id: batch.id } });
+    expect(refreshed.numRetries).toBe(1);
+  });
+
+  it('writes per-file outcomes inside one transaction and skips writeback when opted out', async () => {
     const { batch, sf } = await setupBatch({ writebackOptIn: false });
     const p = payload(batch.id);
     p.folders[0].files[0].custom_fields.file_id = sf.id;
-    // Force a write conflict mid-transaction: pre-mark the batchFile with a
-    // legitimate state, then break the schema by setting an impossible enum.
-    // (We can't easily simulate failure without monkey-patching; this test
-    // instead validates the success path leaves no orphans.)
 
-    await service.handleResults(batch.id, p);
+    await service.handleResults(batch.id, p, `responses/${batch.id}-1.json`);
 
     const issueCats = await prisma.fileIssueCategory.findMany();
     expect(issueCats).toHaveLength(0); // payload has no issues_by_category

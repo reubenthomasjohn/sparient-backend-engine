@@ -21,6 +21,7 @@ enum LastOutcome {
   failed
   permanently_failed
   deleted
+  skipped
 }
 
 enum WritebackState {
@@ -49,6 +50,7 @@ enum ConnectivoFileState {
   completed
   completed_with_warnings
   failed
+  skipped
 }
 
 model Institution {
@@ -69,6 +71,11 @@ model Institution {
   syncEnabled  Boolean   @default(true)  @map("sync_enabled")
   syncTime     String    @default("02:00") @map("sync_time") @db.VarChar(5)
   lastSyncedAt DateTime? @map("last_synced_at")
+
+  // Per-institution behavior overrides (course excludes, file type allowlist,
+  // size cap, locked/hidden handling, course states, writeback ack gate). Null
+  // means "all defaults" — see src/services/sync/syncConfig.ts for the shape.
+  syncConfig   Json?     @map("sync_config")
 
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
@@ -166,17 +173,37 @@ model Batch {
   requiresReview    Int?        @map("requires_review")
   totalIssuesFound  Int?        @map("total_issues_found")
   totalIssuesFixed  Int?        @map("total_issues_fixed")
+  // Number of follow-up responses received after the first. Connectivo may retry
+  // low-quality files on its own and send additional response.json files for the
+  // same batch — we treat each as a partial update.
+  numRetries        Int         @default(0) @map("num_retries")
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @updatedAt @map("updated_at")
 
-  institution Institution @relation(fields: [institutionId], references: [id])
-  course      Course      @relation(fields: [courseId], references: [id])
-  batchFiles  BatchFile[]
+  institution    Institution     @relation(fields: [institutionId], references: [id])
+  course         Course          @relation(fields: [courseId], references: [id])
+  batchFiles     BatchFile[]
+  batchResponses BatchResponse[]
 
   @@index([institutionId])
   @@index([courseId])
   @@index([status])
   @@map("batches")
+}
+
+// One row per response.json processed for a batch. The unique s3Key gives us
+// SQS-redelivery dedup; the count of rows tells us which attempt this is.
+model BatchResponse {
+  id                String   @id @default(uuid())
+  batchId           String   @map("batch_id")
+  s3Key             String   @unique @map("s3_key") @db.VarChar(1000)
+  connectivoBatchId String?  @map("connectivo_batch_id") @db.VarChar(255)
+  processedAt       DateTime @default(now()) @map("processed_at")
+
+  batch Batch @relation(fields: [batchId], references: [id])
+
+  @@index([batchId])
+  @@map("batch_responses")
 }
 
 // A batch_file pins the exact s3_source_key + modifiedAt that was handed to Connectivo.
@@ -230,5 +257,38 @@ model FileIssueCategory {
 
   @@index([batchFileId])
   @@map("file_issue_categories")
+}
+
+// Manually-populated lookup. Each row is an explainer video for a Connectivo issue.
+// Matched to issues_by_category[].issues[].name on the response side via ErrorKeyword.
+model Video {
+  videoId         Int      @id @default(autoincrement()) @map("video_id")
+  videoUrl        String   @unique @map("video_url") @db.VarChar(500)
+  videoTitle      String   @map("video_title") @db.VarChar(255)
+  durationSeconds Int?     @map("duration_seconds")
+  description     String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  // Auto-updated by Postgres trigger `videos_updated_at_trigger`, not Prisma's @updatedAt,
+  // since rows are populated/edited manually via SQL.
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  errorKeywords ErrorKeyword[]
+
+  @@map("videos")
+}
+
+// Keyword that maps a Connectivo issue name to a Video. Multiple keywords per video
+// (synonyms / variations). Lookups should use the LOWER(keyword) functional index
+// for case-insensitive matching.
+model ErrorKeyword {
+  id        Int      @id @default(autoincrement())
+  videoId   Int      @map("video_id")
+  keyword   String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  video Video @relation(fields: [videoId], references: [videoId], onDelete: Cascade)
+
+  @@unique([videoId, keyword])
+  @@map("error_keywords")
 }
 

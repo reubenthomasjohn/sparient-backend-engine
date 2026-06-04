@@ -33,6 +33,64 @@ module "queues" {
 # No Terraform-managed bucket resource — Lambdas have IAM access to sparient-* buckets.
 # The InstitutionBucketService configures S3 event notifications at bucket creation time.
 
+# --- Explainer-video bucket ---
+# Holds the videos that map to Connectivo issue names (see videos / error_keywords tables).
+# Public-read on objects so the FE can use plain https URLs in <video> tags.
+resource "aws_s3_bucket" "accesshub_videos" {
+  bucket = "accesshub-videos"
+}
+
+# Block public ACLs (legacy/risky) but allow bucket policies that grant public read.
+resource "aws_s3_bucket_public_access_block" "accesshub_videos" {
+  bucket                  = aws_s3_bucket.accesshub_videos.id
+  block_public_acls       = true
+  block_public_policy     = false
+  ignore_public_acls      = true
+  restrict_public_buckets = false
+}
+
+data "aws_iam_policy_document" "accesshub_videos_public_read" {
+  statement {
+    sid       = "PublicReadGetObject"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.accesshub_videos.arn}/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "accesshub_videos_public_read" {
+  bucket = aws_s3_bucket.accesshub_videos.id
+  policy = data.aws_iam_policy_document.accesshub_videos_public_read.json
+  # The public-access block must be relaxed before the policy is accepted.
+  depends_on = [aws_s3_bucket_public_access_block.accesshub_videos]
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "accesshub_videos" {
+  bucket = aws_s3_bucket.accesshub_videos.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# CORS so browsers can fetch the videos cross-origin (needed if the FE uses fetch()
+# or Range requests via XHR; not strictly needed for a plain <video src="..."> tag,
+# but harmless and avoids surprises if the FE later switches to fetch-based playback).
+resource "aws_s3_bucket_cors_configuration" "accesshub_videos" {
+  bucket = aws_s3_bucket.accesshub_videos.id
+  cors_rule {
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = ["*"]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag", "Content-Length", "Content-Range"]
+    max_age_seconds = 3600
+  }
+}
+
 # --- Responses SQS queue (S3 event → SQS → responses Lambda) ---
 resource "aws_sqs_queue" "responses_dlq" {
   name                      = "${var.name_prefix}-responses-dlq"
@@ -110,6 +168,7 @@ data "aws_iam_policy_document" "lambda_runtime" {
     resources = [
       "arn:aws:s3:::sparient-*/*",
       "arn:aws:s3:::accesshub-remediation-storage/*",
+      "${aws_s3_bucket.accesshub_videos.arn}/*",
     ]
   }
   statement {
@@ -117,6 +176,7 @@ data "aws_iam_policy_document" "lambda_runtime" {
     resources = [
       "arn:aws:s3:::sparient-*",
       "arn:aws:s3:::accesshub-remediation-storage",
+      aws_s3_bucket.accesshub_videos.arn,
     ]
   }
   statement {
@@ -209,6 +269,8 @@ module "responses_worker" {
 
 # Writeback: RemediationService → SQS → Lambda → Canvas. Concurrency capped low
 # to respect Canvas's rate limits (file uploads are the most rate-limited endpoint).
+# Timeout capped at 150s so queue visibility (900s) keeps the AWS-recommended ≥ 6×
+# ratio — Canvas file replace is typically sub-30s, 150s is generous headroom.
 module "writeback_worker" {
   source          = "../../modules/lambda-worker"
   name_prefix     = var.name_prefix
@@ -218,6 +280,7 @@ module "writeback_worker" {
   queue_url       = module.queues.writeback_queue_url
   dlq_arn         = module.queues.writeback_dlq_arn
   max_concurrency = var.writeback_max_concurrency
+  timeout_seconds = 150
   role_arn        = aws_iam_role.lambda_exec.arn
   env             = local.common_env
 }

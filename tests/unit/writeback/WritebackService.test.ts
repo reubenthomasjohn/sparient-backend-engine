@@ -45,6 +45,10 @@ describe('WritebackService.writeBack', () => {
     prismaMock.batchFile.findUnique.mockResolvedValue(null);
     await service.writeBack('missing');
     expect(sourceClient.replaceFile).not.toHaveBeenCalled();
+    // Neither write path should fire: success uses updateMany (B2 supersession
+    // guard), skipped_stale + failed paths also use updateMany. The legacy
+    // `update` is unused — assert both shapes to lock that in.
+    expect(prismaMock.sourceFile.updateMany).not.toHaveBeenCalled();
     expect(prismaMock.sourceFile.update).not.toHaveBeenCalled();
   });
 
@@ -113,6 +117,7 @@ describe('WritebackService.writeBack', () => {
         downloadUrl: 'http://x',
       },
     });
+    prismaMock.sourceFile.updateMany.mockResolvedValue({ count: 1 } as any);
     await service.writeBack('bf-1');
     expect(sourceClient.replaceFile).toHaveBeenCalledOnce();
   });
@@ -171,8 +176,14 @@ describe('WritebackService.writeBack', () => {
     expect(prismaMock.sourceFile.update).not.toHaveBeenCalled();
   });
 
-  it('records written + lastWritebackModifiedAt on success', async () => {
-    prismaMock.batchFile.findUnique.mockResolvedValue(batchFileWithRelations() as any);
+  it('records written + lastWritebackModifiedAt on success (guarded against stale writers)', async () => {
+    const sourceModifiedAt = new Date('2026-04-01T00:00:00Z');
+    prismaMock.batchFile.findUnique.mockResolvedValue(
+      batchFileWithRelations({
+        batchFile: { sourceModifiedAt },
+        sourceFile: { batchedModifiedAt: sourceModifiedAt },
+      }) as any,
+    );
     const newModifiedAt = new Date('2026-04-02T12:00:00Z');
     sourceClient.replaceFile.mockResolvedValue({
       status: 'replaced',
@@ -186,12 +197,44 @@ describe('WritebackService.writeBack', () => {
         downloadUrl: 'http://x',
       },
     });
+    prismaMock.sourceFile.updateMany.mockResolvedValue({ count: 1 } as any);
 
     await service.writeBack('bf-1');
 
-    expect(prismaMock.sourceFile.update).toHaveBeenCalledWith({
-      where: { id: 'sf-1' },
+    // Guard: only stamp when batchedModifiedAt still matches our sourceModifiedAt
+    // — prevents a stale writeback from clobbering a newer batch's stamp.
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledWith({
+      where: { id: 'sf-1', batchedModifiedAt: sourceModifiedAt },
       data: { writebackState: 'written', lastWritebackModifiedAt: newModifiedAt },
     });
+  });
+
+  it('does not stamp success when supersession-guard updateMany returns count=0', async () => {
+    const sourceModifiedAt = new Date('2026-04-01T00:00:00Z');
+    prismaMock.batchFile.findUnique.mockResolvedValue(
+      batchFileWithRelations({
+        batchFile: { sourceModifiedAt },
+        sourceFile: { batchedModifiedAt: sourceModifiedAt },
+      }) as any,
+    );
+    sourceClient.replaceFile.mockResolvedValue({
+      status: 'replaced',
+      file: {
+        externalId: 'cf-1',
+        displayName: 'doc.pdf',
+        fileName: 'doc.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 1000,
+        modifiedAt: new Date('2026-04-02T12:00:00Z'),
+        downloadUrl: 'http://x',
+      },
+    });
+    // Newer batch already claimed source_file between check and update.
+    prismaMock.sourceFile.updateMany.mockResolvedValue({ count: 0 } as any);
+
+    await service.writeBack('bf-1');
+
+    // Method must return cleanly — no throw.
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledOnce();
   });
 });

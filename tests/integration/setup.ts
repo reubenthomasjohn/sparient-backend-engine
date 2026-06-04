@@ -7,6 +7,7 @@ import prisma from '../../src/db/client';
 // transactions across that pattern reliably. Truncate is fast on tiny tables.
 beforeEach(async () => {
   await prisma.$executeRawUnsafe('TRUNCATE TABLE "file_issue_categories" RESTART IDENTITY CASCADE');
+  await prisma.$executeRawUnsafe('TRUNCATE TABLE "batch_responses" RESTART IDENTITY CASCADE');
   await prisma.$executeRawUnsafe('TRUNCATE TABLE "batch_files" RESTART IDENTITY CASCADE');
   await prisma.$executeRawUnsafe('TRUNCATE TABLE "batches" RESTART IDENTITY CASCADE');
   await prisma.$executeRawUnsafe('TRUNCATE TABLE "source_files" RESTART IDENTITY CASCADE');

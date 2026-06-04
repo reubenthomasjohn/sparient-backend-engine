@@ -273,6 +273,21 @@
               ]
             }
           }
+        },
+        {
+          "name": "Trigger single file remediation",
+          "request": {
+            "method": "POST",
+            "description": "User-driven 'remediate this file now'. Refreshes the file from Canvas, uploads to S3, and creates a batch synchronously. Returns { batchId, sourceFileId, wasAlreadyInFlight } — poll GET /batches/:batchId for completion.\n\nDefaults force=true (set ?force=false to skip if file is already up-to-date). Hard cap: 100 MB; larger files must use the course-level sync.\n\ncourseId and canvasFileId are Canvas's external IDs; institutionId is our internal UUID.",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sync/institutions/{{institutionId}}/courses/{{courseId}}/files/{{canvasFileId}}?force=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sync", "institutions", "{{institutionId}}", "courses", "{{courseId}}", "files", "{{canvasFileId}}"],
+              "query": [
+                { "key": "force", "value": "true" }
+              ]
+            }
+          }
         }
       ]
     },

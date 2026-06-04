@@ -25,10 +25,14 @@ Remaining bugs and improvements from the audit (2026-04-21). Critical bugs have 
 - **Issue:** At scale, many concurrent Lambdas × 10 connections each will exhaust Neon's connection limit.
 - **Fix:** Set `pool: { max: 1 }` in PrismaPg constructor. Lambda is single-threaded.
 
-### M5. `FileChangeDetector` mass-delete guard only catches empty list
-- **File:** `src/services/sync/FileChangeDetector.ts:83`
-- **Issue:** If Canvas returns a truncated list (pagination bug), excess files are marked deleted. Rediscovered files at the same `modifiedAt` stay stuck as `deleted` (`isNewer` is false).
-- **Fix:** Add proportional guard (`toDelete.length / existing.length > 0.5` → skip). Clear `lastOutcome: 'deleted'` when a file reappears regardless of `isNewer`.
+### M5. `FileChangeDetector` mass-delete guard only catches empty list — **FIXED**
+- **File:** `src/services/sync/FileChangeDetector.ts`
+- **Original issue:** If Canvas returns a truncated list (pagination bug), excess files are marked deleted. Rediscovered files at the same `modifiedAt` stay stuck as `deleted` (`isNewer` is false).
+- **What was done:**
+  1. Added an *in-scope* guard: rows whose stored `mimeType` is no longer in the institution's `allowedMimeTypes` are excluded from deletion entirely. They're "out of scope" (the institution narrowed the allowlist), not deleted from Canvas.
+  2. Added the reappear-after-deleted clear: when a previously-deleted row appears in discovery again, `lastOutcome` is cleared, retry counters reset, and `batchedModifiedAt` is reset to `null` so BatchBuilder re-claims it.
+  3. Plus the writeback-loop guard now skips its `continue` when `lastOutcome === 'deleted'`, so a previously-written-back-then-deleted file can recover.
+- **Still open:** the proportional guard (`toDelete.length / existing.length > 0.5` → skip) for true Canvas pagination bugs is not implemented. Add when we see a real pagination incident.
 
 ### M6. `UploadFailed` Pass state in SFN loses `sourceFileId` context
 - **File:** `terraform/envs/dev/main.tf` (SFN definition, UploadFailed state)

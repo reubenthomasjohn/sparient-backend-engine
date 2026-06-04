@@ -2,6 +2,7 @@ import { Batch, Course, Institution, SourceFile } from '@prisma/client';
 import prisma from '../../db/client';
 import { requestPublisher } from '../remediation/RequestPublisher';
 import { computeFailureUpdate } from '../../utils/failure';
+import { Errors } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 
 export interface BuildOptions {
@@ -9,6 +10,11 @@ export interface BuildOptions {
   isRetry?: boolean;
   forceReprocess?: boolean;
   s3Bucket: string;
+}
+
+export interface BuildForFileResult {
+  batchId: string;
+  wasAlreadyInFlight: boolean;
 }
 
 export class BatchBuilder {
@@ -56,6 +62,11 @@ export class BatchBuilder {
             batchedModifiedAt: file.s3SourceModifiedAt!,
             lastOutcome: null,
             lastFailureReason: null,
+            // Reset writeback state — the previous values refer to an older
+            // version. Without this reset, a 'skipped_stale' or 'written' from a
+            // prior cycle would inhibit the new cycle's writeback enqueue.
+            writebackState: null,
+            lastWritebackModifiedAt: null,
           },
         });
         if (count === 1) claimed.push(file);
@@ -120,5 +131,133 @@ export class BatchBuilder {
     }
 
     return batch;
+  }
+
+  // Atomic single-file batch creation for the on-demand "remediate this one
+  // file" trigger. Caller must have ensured the source file is upload-ready
+  // (s3SourceKey and s3SourceModifiedAt populated by handleUploadJob).
+  //
+  // Why this exists separately from buildForCourse: buildForCourse claims
+  // every eligible file in the course, which is wrong for a single-file
+  // trigger (the UI would get a multi-file batchId). It also does not
+  // serialize with concurrent buildForCourse calls — it relies on an
+  // optimistic CAS on batched_modified_at. The trigger flow clears that
+  // column to null mid-flow, and a buildForCourse run that interleaves
+  // can claim the file at the old s3_source_modified_at; the trigger's
+  // own claim then runs at the bumped s3_source_modified_at, putting the
+  // same row in two pending batches and double-billing Connectivo.
+  //
+  // The SELECT FOR UPDATE inside the transaction below closes that window:
+  // any concurrent buildForCourse.updateMany on the same row blocks until
+  // we commit. We either find an existing pending batch and return its
+  // id, or claim the row and create a single-file batch.
+  async buildForFile(
+    institution: Institution,
+    course: Course,
+    sourceFile: SourceFile,
+    options: BuildOptions,
+  ): Promise<BuildForFileResult> {
+    if (sourceFile.s3SourceKey === null || sourceFile.s3SourceModifiedAt === null) {
+      throw new Error(
+        `buildForFile: sourceFile ${sourceFile.id} is missing s3SourceKey or s3SourceModifiedAt — ` +
+        `caller must complete the upload before calling buildForFile.`,
+      );
+    }
+
+    const claim = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM source_files WHERE id = ${sourceFile.id} FOR UPDATE`;
+
+      const inFlight = await tx.batchFile.findFirst({
+        where: { sourceFileId: sourceFile.id, batch: { status: 'pending' } },
+        orderBy: { createdAt: 'desc' },
+        select: { batchId: true },
+      });
+      if (inFlight) {
+        return { kind: 'inFlight' as const, batchId: inFlight.batchId };
+      }
+
+      await tx.sourceFile.update({
+        where: { id: sourceFile.id },
+        data: {
+          batchedModifiedAt: sourceFile.s3SourceModifiedAt!,
+          lastOutcome: null,
+          lastFailureReason: null,
+          // Reset writeback state — same reason as the buildForCourse path:
+          // prior 'skipped_stale' / 'written' refers to an older version.
+          writebackState: null,
+          lastWritebackModifiedAt: null,
+        },
+      });
+
+      const batch = await tx.batch.create({
+        data: {
+          institutionId: institution.id,
+          courseId: course.id,
+          status: 'pending',
+          isInitialSync: options.isInitialSync ?? false,
+          isRetry: options.isRetry ?? false,
+          totalFiles: 1,
+        },
+      });
+
+      await tx.batchFile.create({
+        data: {
+          batchId: batch.id,
+          sourceFileId: sourceFile.id,
+          canvasFileId: sourceFile.canvasFileId,
+          s3SourceKey: sourceFile.s3SourceKey!,
+          sourceModifiedAt: sourceFile.s3SourceModifiedAt!,
+        },
+      });
+
+      return { kind: 'created' as const, batchId: batch.id, batch };
+    });
+
+    if (claim.kind === 'inFlight') {
+      logger.info('BatchBuilder: single-file trigger caught pre-existing in-flight batch', {
+        sourceFileId: sourceFile.id,
+        batchId: claim.batchId,
+      });
+      return { batchId: claim.batchId, wasAlreadyInFlight: true };
+    }
+
+    logger.info('BatchBuilder: single-file batch created', {
+      batchId: claim.batchId,
+      courseId: course.id,
+      sourceFileId: sourceFile.id,
+      forceReprocess: options.forceReprocess ?? false,
+    });
+
+    // Publish outside the transaction (S3 latency). Mirror buildForCourse's
+    // rollback shape on publish failure: revert the claim via
+    // computeFailureUpdate and mark the batch failed so the next scheduled
+    // sync re-attempts. Surface the failure to the caller as a 502 — unlike
+    // buildForCourse's null-return semantics, the single-file trigger is
+    // user-driven and the UI needs to see the error.
+    try {
+      await requestPublisher.publish(claim.batch, institution, course, options.s3Bucket, options.forceReprocess ?? false);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.error('BatchBuilder: single-file publish failed, rolling back', {
+        batchId: claim.batchId,
+        sourceFileId: sourceFile.id,
+        error: reason,
+      });
+      const fu = computeFailureUpdate(sourceFile, `Request publish failed: ${reason}`);
+      await prisma.sourceFile.update({
+        where: { id: sourceFile.id },
+        data: { ...fu, batchedModifiedAt: null },
+      });
+      await prisma.batch.update({
+        where: { id: claim.batchId },
+        data: { status: 'failed' },
+      });
+      throw Errors.badGateway(
+        `Failed to publish remediation request for '${sourceFile.fileName}': ${reason}. ` +
+        `The file will be retried automatically by the next scheduled sync.`,
+      );
+    }
+
+    return { batchId: claim.batchId, wasAlreadyInFlight: false };
   }
 }

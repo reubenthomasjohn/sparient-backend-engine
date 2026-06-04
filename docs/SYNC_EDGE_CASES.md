@@ -18,7 +18,9 @@ Canvas `modified_at` advances → detector bumps `discovered_modified_at` and cl
 Canvas only bumps `modified_at` on content change; our detector keys off `modified_at`, so metadata churn is ignored by design.
 
 ### 1.4 File deleted from Canvas — ✅
-After listing, detector cross-references with the DB. Missing files get `last_outcome = 'deleted'`. **Mass-delete guard:** if Canvas returns zero files *and* we have existing rows for the course, we abort the course sync without marking anything deleted — this prevents an API blip from wiping the course.
+After listing, detector cross-references with the DB. Missing files get `last_outcome = 'deleted'`. Two guards prevent over-eager deletion:
+- **Mass-delete guard:** if Canvas returns zero files *and* we have existing rows for the course, we abort the course sync without marking anything deleted — this prevents an API blip from wiping the course.
+- **In-scope guard:** rows whose stored `mimeType` is no longer in the institution's current `allowedMimeTypes` (e.g. the institution narrowed `syncConfig.allowedFileTypes`) are excluded from the deletion check. They're out of scope, not deleted from Canvas; if the institution later re-widens the allowlist, the reappear-after-deleted path picks them back up.
 
 ### 1.5 File deleted then re-uploaded — ✅
 Canvas assigns a new file id; we treat it as brand new.
@@ -26,8 +28,8 @@ Canvas assigns a new file id; we treat it as brand new.
 ### 1.6 Wrong MIME type (`application/octet-stream`) — ✅
 Server-side `content_types[]` filter plus a client-side extension check.
 
-### 1.7 Locked or hidden in Canvas — ⚠️ Assumption
-We process them as normal. Add a `file.locked` filter in `CanvasFileFetcher` if an institution needs them skipped.
+### 1.7 Locked or hidden in Canvas — ✅ Configurable
+Default behavior is to process them as normal (open by default). To skip them, PATCH the institution's `syncConfig` with `skipLockedFiles: true` and/or `skipHiddenFiles: true`. The filter is applied in `CanvasSourceClient.getFiles()`; excluded files never enter the pipeline. See `src/services/sync/syncConfig.ts` for the full per-institution config.
 
 ---
 
@@ -124,7 +126,7 @@ Retries happen during each course discover pass (the batch-publish step retries 
 | 1.4 | File deleted (with mass-delete guard) | ✅ |
 | 1.5 | Deleted then re-uploaded | ✅ |
 | 1.6 | Wrong MIME type | ✅ |
-| 1.7 | Locked / hidden | ⚠️ |
+| 1.7 | Locked / hidden | ✅ |
 | 2.1 | Added between syncs | ✅ |
 | 2.2 | Added during a sync | ✅ |
 | 2.3 | Silent empty response | ✅ |

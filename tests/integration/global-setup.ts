@@ -14,8 +14,12 @@ export async function setup(): Promise<void> {
     .withPassword('test')
     .start();
 
-  const url = container.getConnectionUri();
-  process.env.DATABASE_URL = url;
+  // Append sslmode=disable: the testcontainer Postgres image has no SSL, and
+  // src/db/client.ts defaults to verify-full when sslmode is unset.
+  const baseUrl = container.getConnectionUri();
+  const url = new URL(baseUrl);
+  url.searchParams.set('sslmode', 'disable');
+  process.env.DATABASE_URL = url.toString();
 
   // prisma migrate deploy is idempotent and does not require a shadow DB.
   // It applies every migration in order — same path used in CI.
