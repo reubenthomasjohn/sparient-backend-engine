@@ -8,7 +8,10 @@ import { logger } from '../../utils/logger';
 // so SQS can redrive — DLQ catches terminal failures.
 export async function handleWritebackJob(job: WritebackJob): Promise<void> {
   try {
-    await writebackService.writeBack(job.batchFileId);
+    await writebackService.writeBack(job.batchFileId, {
+      ignoreOptIn: job.ignoreOptIn,
+      sourceFileId: job.sourceFileId,
+    });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     logger.error('Writeback: job failed', { batchFileId: job.batchFileId, error: reason });
@@ -30,7 +33,11 @@ export async function handleWritebackJob(job: WritebackJob): Promise<void> {
         await prisma.sourceFile.updateMany({
           where: {
             id: batchFile.sourceFileId,
-            OR: [{ writebackState: null }, { writebackState: 'failed' }],
+            OR: [
+              { writebackState: null },
+              { writebackState: 'failed' },
+              { writebackState: 'queued' },
+            ],
           },
           data: { writebackState: 'failed' },
         });

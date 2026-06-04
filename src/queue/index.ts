@@ -24,6 +24,13 @@ export interface UploadJob {
 // PDF back into Canvas.
 export interface WritebackJob {
   batchFileId: string;
+  // Set by the user-driven replace endpoint. A manual click is explicit consent,
+  // so the worker skips the institution/course writebackOptIn gate when this is true.
+  ignoreOptIn?: boolean;
+  // Also set by the replace endpoint. Lets the worker resolve a lingering optimistic
+  // 'queued' stamp even on the batch_file-not-found path (where it can't otherwise
+  // recover the source_file id), so the UI's poll always terminates.
+  sourceFileId?: string;
 }
 
 function build<T>(name: string, url?: string): Queue<T> {

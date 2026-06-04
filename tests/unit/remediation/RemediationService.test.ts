@@ -367,6 +367,24 @@ describe('RemediationService.enqueueWritebacks', () => {
     expect(writebackQueue.send).not.toHaveBeenCalled();
   });
 
+  it('dedupes a file with a manual replace already in flight (writebackState=queued)', async () => {
+    const sourceModifiedAt = new Date('2026-04-01');
+    setup({
+      batchFiles: [
+        {
+          ...makeBatchFile({ sourceModifiedAt }),
+          sourceFile: {
+            writebackState: 'queued',
+            lastWritebackModifiedAt: null,
+            batchedModifiedAt: sourceModifiedAt,
+          },
+        },
+      ],
+    });
+    await service.enqueueWritebacks('batch-1');
+    expect(writebackQueue.send).not.toHaveBeenCalled();
+  });
+
   it('skips superseded files (sourceFile.batchedModifiedAt no longer matches batch_file)', async () => {
     setup({
       batchFiles: [

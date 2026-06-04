@@ -455,20 +455,24 @@ export class RemediationService {
         return false;
       }
 
-      // Dedupe — two cases where we don't re-enqueue for the current version:
+      // Dedupe — three cases where we don't re-enqueue for the current version:
       //   1. 'written' AND lastWritebackModifiedAt > sourceModifiedAt
       //      A successful writeback stamps Canvas's post-upload timestamp, which is
       //      strictly after sourceModifiedAt.
       //   2. 'skipped_stale'
       //      Canvas drift was detected last time we tried this version; the consumer
       //      would skip again. Re-enqueueing wastes SQS messages until DLQ.
-      // Both states are reset by BatchBuilder when a new batch claims the source_file
+      //   3. 'queued'
+      //      A manual replace already has a writeback job in flight for this version;
+      //      enqueueing again would duplicate the Canvas write.
+      // These states are reset by BatchBuilder when a new batch claims the source_file
       // (newer batchedModifiedAt), so they always refer to the current cycle here.
       const alreadyHandledForVersion =
         (sf.writebackState === 'written' &&
           sf.lastWritebackModifiedAt !== null &&
           sf.lastWritebackModifiedAt.getTime() > bf.sourceModifiedAt.getTime()) ||
-        sf.writebackState === 'skipped_stale';
+        sf.writebackState === 'skipped_stale' ||
+        sf.writebackState === 'queued';
       return !alreadyHandledForVersion;
     });
 
