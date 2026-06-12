@@ -1,0 +1,242 @@
+name: Deploy (prod)
+
+# Prod deploys are deliberate: manual dispatch, or a push to the dedicated `prod` branch.
+on:
+  push:
+    branches: [prod]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'prisma/**'
+      - 'terraform/**'
+      - 'certs/**'
+      - 'Dockerfile.lambda'
+      - 'Dockerfile.migrate'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vitest.config.ts'
+      - '.github/workflows/deploy-prod.yml'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+
+  # Set in repo → Settings → Secrets and variables → Actions:
+  #
+  # Variables:
+  #   AWS_ROLE_ARN_PROD = (terraform output -raw github_actions_role_arn, from envs/prod)
+  #
+  # Prod has no Neon — the database is RDS + RDS Proxy, so no NEON_API_KEY secret here.
+
+jobs:
+  # 0. Tests + type check (gates everything else)
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+        run: npx prisma generate
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests
+        run: npm run test:integration
+
+  # 1. Terraform
+  terraform:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      ecr_api:             ${{ steps.ecr.outputs.api }}
+      ecr_discovery:       ${{ steps.ecr.outputs.discovery }}
+      ecr_course_workflow: ${{ steps.ecr.outputs.course_workflow }}
+      ecr_responses:       ${{ steps.ecr.outputs.responses }}
+      ecr_writeback:       ${{ steps.ecr.outputs.writeback }}
+      ecr_migrate:         ${{ steps.ecr.outputs.migrate }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: terraform/envs/prod
+        run: terraform init -input=false
+
+      - name: Terraform apply
+        working-directory: terraform/envs/prod
+        run: terraform apply -auto-approve -input=false -var="use_aws_profile=false"
+
+      - name: Export ECR repo URLs
+        id: ecr
+        working-directory: terraform/envs/prod
+        run: |
+          echo "api=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-api"]')" >> "$GITHUB_OUTPUT"
+          echo "discovery=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-discovery"]')" >> "$GITHUB_OUTPUT"
+          echo "course_workflow=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-course-workflow"]')" >> "$GITHUB_OUTPUT"
+          echo "responses=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-responses"]')" >> "$GITHUB_OUTPUT"
+          echo "writeback=$(terraform output -json ecr_repo_urls | jq -r '.["sparient-writeback"]')" >> "$GITHUB_OUTPUT"
+          echo "migrate=$(terraform output -raw migrate_repo_url)" >> "$GITHUB_OUTPUT"
+
+  # 2. Build images (5 app Lambdas + the migrate runner)
+  build:
+    needs: terraform
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: api
+            dockerfile: Dockerfile.lambda
+            entry: workers/api/lambda
+            ecr_output: ecr_api
+          - name: discovery
+            dockerfile: Dockerfile.lambda
+            entry: workers/discovery/lambda
+            ecr_output: ecr_discovery
+          - name: course-workflow
+            dockerfile: Dockerfile.lambda
+            entry: workers/course/lambda
+            ecr_output: ecr_course_workflow
+          - name: responses
+            dockerfile: Dockerfile.lambda
+            entry: workers/responses/lambda
+            ecr_output: ecr_responses
+          - name: writeback
+            dockerfile: Dockerfile.lambda
+            entry: workers/writeback/lambda
+            ecr_output: ecr_writeback
+          - name: migrate
+            dockerfile: Dockerfile.migrate
+            entry: '' # no LAMBDA_ENTRY — the migrate handler is fixed
+            ecr_output: ecr_migrate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build + push
+        env:
+          ECR_URI: ${{ needs.terraform.outputs[matrix.ecr_output] }}
+        run: |
+          BUILD_ARGS=""
+          if [ -n "${{ matrix.entry }}" ]; then
+            BUILD_ARGS="--build-arg LAMBDA_ENTRY=${{ matrix.entry }}"
+          fi
+          docker build \
+            -f ${{ matrix.dockerfile }} \
+            $BUILD_ARGS \
+            -t $ECR_URI:${{ github.sha }} \
+            -t $ECR_URI:latest .
+          docker push $ECR_URI:${{ github.sha }}
+          docker push $ECR_URI:latest
+
+  # 3. Prisma migrations — run inside the VPC via the migrate Lambda (private RDS isn't
+  #    reachable from the GitHub runner). Update its code, invoke it, assert ok:true.
+  migrate:
+    needs: [terraform, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Update migrate Lambda to the new image
+        env:
+          ECR_URI: ${{ needs.terraform.outputs.ecr_migrate }}
+        run: |
+          aws lambda update-function-code \
+            --function-name sparient-prod-migrate \
+            --image-uri $ECR_URI:${{ github.sha }} \
+            --publish
+          aws lambda wait function-updated --function-name sparient-prod-migrate
+
+      - name: Run migrations
+        run: |
+          aws lambda invoke \
+            --function-name sparient-prod-migrate \
+            --cli-read-timeout 300 \
+            --payload '{}' --cli-binary-format raw-in-base64-out \
+            /tmp/out.json > /tmp/meta.json
+          echo "--- invoke metadata ---"; cat /tmp/meta.json
+          echo; echo "--- payload ---"; cat /tmp/out.json; echo
+          if grep -q '"FunctionError"' /tmp/meta.json; then
+            echo "::error::migrate Lambda returned a function error"
+            exit 1
+          fi
+          python3 -c "import json,sys; d=json.load(open('/tmp/out.json')); print(d.get('output','')); sys.exit(0 if d.get('ok') is True else 1)"
+
+  # 4. Update the 5 app Lambdas (after migrations succeed)
+  deploy:
+    needs: [terraform, build, migrate]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - function: sparient-prod-api
+            ecr_output: ecr_api
+          - function: sparient-prod-discovery
+            ecr_output: ecr_discovery
+          - function: sparient-prod-course-workflow
+            ecr_output: ecr_course_workflow
+          - function: sparient-prod-responses
+            ecr_output: ecr_responses
+          - function: sparient-prod-writeback
+            ecr_output: ecr_writeback
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PROD }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Update Lambda
+        env:
+          ECR_URI: ${{ needs.terraform.outputs[matrix.ecr_output] }}
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ matrix.function }} \
+            --image-uri $ECR_URI:${{ github.sha }} \
+            --publish
+
+      - name: Wait for update
+        run: aws lambda wait function-updated --function-name ${{ matrix.function }}

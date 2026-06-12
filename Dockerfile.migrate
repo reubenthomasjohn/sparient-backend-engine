@@ -1,0 +1,51 @@
+# Migration-runner Lambda. Unlike the app images (Dockerfile.lambda), this KEEPS the
+# Prisma CLI + prisma/migrations + prisma.config.ts so it can run `prisma migrate deploy`
+# inside the VPC, where the private RDS Proxy lives. Invoked on demand by CI after
+# `terraform apply` — not on any event source.
+#
+# Build:
+#   docker build -f Dockerfile.migrate -t sparient-migrate:latest .
+
+# ---------- build stage ----------
+FROM public.ecr.aws/lambda/nodejs:20 AS build
+
+WORKDIR /build
+COPY package*.json ./
+COPY prisma ./prisma
+RUN npm ci
+
+COPY tsconfig.json prisma.config.ts ./
+COPY src ./src
+
+# Generate the client (harmless for migrate, keeps the image self-consistent).
+RUN npx prisma generate
+
+# Bundle just the handler; node_modules (incl. the Prisma CLI it shells out to) is
+# copied wholesale into the runtime stage below.
+RUN npx --yes esbuild@0.21.5 \
+      src/workers/migrate/lambda.ts \
+      --bundle --platform=node --target=node20 \
+      --packages=external \
+      --outfile=dist/index.js
+
+# NOTE: deliberately NO `npm prune --omit=dev` here — `prisma` is a devDependency and
+# the CLI must survive into the runtime image.
+
+# ---------- runtime stage ----------
+FROM public.ecr.aws/lambda/nodejs:20
+
+# Bundled handler.
+COPY --from=build /build/dist/index.js ${LAMBDA_TASK_ROOT}/index.js
+
+# Full node_modules — includes the Prisma CLI (node_modules/prisma/build/index.js).
+COPY --from=build /build/node_modules ${LAMBDA_TASK_ROOT}/node_modules
+
+# `prisma migrate deploy` reads these: schema + migrations, and the datasource URL via
+# prisma.config.ts → env('DATABASE_URL').
+COPY --from=build /build/prisma ${LAMBDA_TASK_ROOT}/prisma
+COPY --from=build /build/prisma.config.ts ${LAMBDA_TASK_ROOT}/prisma.config.ts
+
+# Amazon RDS global CA bundle — verify-full TLS to the RDS Proxy (see NODE_EXTRA_CA_CERTS).
+COPY certs ${LAMBDA_TASK_ROOT}/certs
+
+CMD ["index.handler"]

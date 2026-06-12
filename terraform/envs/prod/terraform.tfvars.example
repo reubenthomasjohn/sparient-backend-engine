@@ -1,0 +1,15 @@
+region      = "us-west-2"
+name_prefix = "sparient-prod"
+
+# S3 buckets are per-institution (sparient-<institutionId>), created dynamically.
+# No global bucket variable needed.
+
+# Concurrency caps
+discovery_max_concurrency   = 5
+api_provisioned_concurrency = 1
+
+# CI/CD
+github_repo_name     = "sparient-backend-engine"
+github_deploy_branch = "prod"
+
+# Unlike dev, prod has no Neon — the database is RDS + RDS Proxy (see the database module).

@@ -13,7 +13,7 @@ terraform apply -var='state_bucket_name=sparient-tfstate-<your-suffix>'
 
 Then copy the output values into `../envs/dev/backend.tf` and `../envs/single/backend.tf`.
 
-This stack also creates the **GitHub Actions OIDC provider** (account-level singleton) so both env stacks can attach IAM roles to it via a `data` lookup.
+This stack also creates the **GitHub Actions OIDC provider** (account-level singleton) so both env stacks can attach IAM roles to it via a `data` lookup, and the shared **`accesshub-videos`** explainer-video bucket, which dev and prod reference by ARN (so tearing down either env never touches it). If that bucket already exists in an env's state, re-home it with `terraform state rm` + `terraform import` — see the "move accesshub-videos into bootstrap state" runbook in `../README.md`.
 
 The state for bootstrap itself lives in `terraform.tfstate` next to this file.
 Don't commit it. It only contains the bucket + table names, which are not secrets,

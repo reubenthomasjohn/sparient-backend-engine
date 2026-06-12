@@ -11,6 +11,7 @@ resource "aws_ecr_repository" "this" {
   for_each             = toset(var.repo_names)
   name                 = each.key
   image_tag_mutability = "MUTABLE"
+  force_delete         = true # allow `terraform destroy` to remove repos that still hold images
 
   image_scanning_configuration {
     scan_on_push = true
