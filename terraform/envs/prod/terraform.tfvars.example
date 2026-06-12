@@ -13,3 +13,6 @@ github_repo_name     = "sparient-backend-engine"
 github_deploy_branch = "prod"
 
 # Unlike dev, prod has no Neon — the database is RDS + RDS Proxy (see the database module).
+
+# SSM bastion for local DB access (on by default). Uncomment to remove it when not needed.
+# create_bastion = false

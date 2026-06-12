@@ -138,6 +138,42 @@ The images bundle `certs/rds-global-bundle.pem` and prod Lambdas set
 Push to the **`prod`** branch (or run the **"Deploy (prod)"** workflow manually). CI:
 tests → terraform apply → build 6 images → invoke migrate Lambda → update 5 app Lambdas.
 
+### Connecting to the prod RDS from a local DB client
+
+The RDS instance and its proxy are private (no public route), so a local client
+(TablePlus / DBeaver / psql) tunnels in through an **SSM bastion** — a `t4g.nano` jump host
+with no SSH keys, no public IP, and no inbound ports. It's controlled by `create_bastion`
+(**on by default**, `bastion.tf`):
+
+```bash
+# It's on by default. To remove it when you're not using it (saves ~$3/mo):
+terraform apply -var="create_bastion=false"
+# …and to bring it back:
+terraform apply -var="create_bastion=true"
+```
+
+Prereqs (once): AWS CLI + the **Session Manager plugin** installed locally.
+
+```bash
+cd terraform/envs/prod
+
+# 1. Open the tunnel: localhost:5432 → RDS Proxy, through the bastion. Leave it running.
+aws ssm start-session \
+  --target "$(terraform output -raw bastion_instance_id)" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "{\"host\":[\"$(terraform output -raw db_proxy_endpoint)\"],\"portNumber\":[\"5432\"],\"localPortNumber\":[\"5432\"]}" \
+  --region us-west-2 --profile sparient
+
+# 2. Grab the password (in a second terminal).
+aws ssm get-parameter --name /sparient-prod/db/password --with-decryption \
+  --query Parameter.Value --output text --region us-west-2 --profile sparient
+```
+
+Then point the client at the tunnel: **host** `localhost`, **port** `5432`, **db** `sparient`,
+**user** `sparient`, password from step 2, **SSL mode** `require` (the proxy enforces TLS; use
+`verify-full` with `certs/rds-global-bundle.pem` if you want full verification). You connect
+*through the proxy*, which authenticates with the same `sparient` credentials.
+
 ### Tearing down (dev and prod are independent)
 
 Dev and prod have **separate Terraform states** (`dev/terraform.tfstate` vs

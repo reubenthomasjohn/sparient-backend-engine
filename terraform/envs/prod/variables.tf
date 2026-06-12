@@ -24,6 +24,13 @@ variable "name_prefix" {
   default = "sparient-prod"
 }
 
+# SSM bastion for reaching the private RDS Proxy from a local DB client. On by default
+# (~$3/mo for a t4g.nano). Set to false + apply to remove it when you don't need a tunnel.
+variable "create_bastion" {
+  type    = bool
+  default = true
+}
+
 # --- RDS sizing / durability (prod-grade by default) ---
 variable "db_instance_class" {
   type    = string
