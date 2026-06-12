@@ -76,13 +76,13 @@ resource "aws_db_subnet_group" "this" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.name_prefix}-rds-sg"
-  description = "RDS Postgres — reachable only from RDS Proxy"
+  description = "RDS Postgres - reachable only from RDS Proxy"
   vpc_id      = var.vpc_id
 }
 
 resource "aws_security_group" "proxy" {
   name        = "${var.name_prefix}-rds-proxy-sg"
-  description = "RDS Proxy — reachable only from Lambda SG"
+  description = "RDS Proxy - reachable only from Lambda SG"
   vpc_id      = var.vpc_id
 }
 

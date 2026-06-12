@@ -16,7 +16,7 @@ module "networking" {
 # module adds the ingress rule that lets this SG reach the RDS Proxy on 5432.
 resource "aws_security_group" "lambda" {
   name        = "${var.name_prefix}-lambda-sg"
-  description = "Shared SG for VPC Lambdas — egress to NAT, ingress allowed to RDS Proxy"
+  description = "Shared SG for VPC Lambdas - egress to NAT, ingress allowed to RDS Proxy"
   vpc_id      = module.networking.vpc_id
 }
 
