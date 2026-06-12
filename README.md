@@ -311,6 +311,28 @@ AWS deployment uses Neon (Postgres), SQS, 4 Lambdas, API Gateway, and EventBridg
 
 CI/CD: push to `main` → GitHub Actions runs Terraform apply → Prisma migrate → builds 4 Docker images → updates 4 Lambdas.
 
+A separate **prod** env (`terraform/envs/prod`, us-west-2) runs on RDS + RDS Proxy inside a VPC. See `terraform/README.md` for its bring-up and the full local-access walkthrough.
+
+### Connecting to the prod RDS locally
+
+The prod database is private. Open an SSM port-forward through the bastion (`create_bastion`, on by default), then point your DB client at `localhost:5432`:
+
+```bash
+cd terraform/envs/prod
+aws ssm start-session \
+  --target "$(terraform output -raw bastion_instance_id)" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "{\"host\":[\"$(terraform output -raw db_proxy_endpoint)\"],\"portNumber\":[\"5432\"],\"localPortNumber\":[\"5432\"]}" \
+  --region us-west-2 --profile sparient
+```
+
+Then connect with host `localhost`, port `5432`, db `sparient`, user `sparient`, SSL mode `require`. Get the password with:
+
+```bash
+aws ssm get-parameter --name /sparient-prod/db/password --with-decryption \
+  --query Parameter.Value --output text --region us-west-2 --profile sparient
+```
+
 ## Adding a New Source (e.g. SharePoint)
 
 1. Create `src/services/sources/sharepoint/SharePointSourceClient.ts` implementing `ISourceClient`. The interface has two groups of methods:
