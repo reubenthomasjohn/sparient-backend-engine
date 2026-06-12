@@ -97,9 +97,10 @@ terraform apply -target=module.ecr -target=aws_ecr_repository.migrate
 ECR_BASE=882884689403.dkr.ecr.us-west-2.amazonaws.com
 aws ecr get-login-password --region us-west-2 --profile sparient | \
   docker login --username AWS --password-stdin $ECR_BASE
-docker pull public.ecr.aws/lambda/nodejs:20
+# --platform matters on Apple Silicon: the Lambdas are x86_64, an arm64 manifest fails.
+docker pull --platform linux/amd64 public.ecr.aws/lambda/nodejs:20
 for repo in sparient-api sparient-discovery sparient-course-workflow \
-            sparient-responses sparient-writeback sparient-migrate; do
+            sparient-responses sparient-writeback sparient-prod-migrate; do
   docker tag public.ecr.aws/lambda/nodejs:20 $ECR_BASE/$repo:bootstrap
   docker push $ECR_BASE/$repo:bootstrap
 done
