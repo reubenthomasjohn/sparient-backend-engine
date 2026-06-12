@@ -111,8 +111,8 @@ terraform apply
 #      AWS_ROLE_ARN_PROD = $(terraform output -raw github_actions_role_arn)
 #    AWS_ACCOUNT_ID is already set from dev (same account). No NEON_API_KEY — prod has no Neon.
 
-# 6. First migration runs automatically: push the `prod` branch (or run the
-#    "Deploy (prod)" workflow manually). The migrate job builds the migrate image,
+# 6. First migration runs automatically: merge/push to `main` (or run the
+#    "Deploy (prod)" workflow manually from main). The migrate job builds the migrate image,
 #    points the migrate Lambda at it, and invokes it inside the VPC.
 #    To run migrations by hand instead:
 #      aws lambda invoke --function-name sparient-prod-migrate --region us-west-2 \
@@ -135,8 +135,9 @@ The images bundle `certs/rds-global-bundle.pem` and prod Lambdas set
 
 ### Updating prod
 
-Push to the **`prod`** branch (or run the **"Deploy (prod)"** workflow manually). CI:
-tests → terraform apply → build 6 images → invoke migrate Lambda → update 5 app Lambdas.
+Merge/push to **`main`** (or run the **"Deploy (prod)"** workflow manually from main). CI:
+tests → terraform apply → build 6 images → invoke migrate Lambda → update 5 app Lambdas →
+repoint the api Lambda's `live` alias at the new version.
 
 ### Connecting to the prod RDS from a local DB client
 
@@ -257,7 +258,7 @@ takes over.
 
 ## Updating
 
-- **Code + infra:** push to `main`. CI runs tests → terraform apply → prisma migrate → build 5 images → update 5 Lambdas.
+- **Code + infra:** push to `dev`. CI runs tests → terraform apply → prisma migrate → build 5 images → update 5 Lambdas.
 - **Manual deploy:** Actions tab → "Deploy (dev)" → "Run workflow".
 - **Local fallback** (skip CI): `docker build` + `docker push` + `aws lambda update-function-code`.
 

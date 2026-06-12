@@ -1,8 +1,9 @@
 name: Deploy (dev)
 
+# Branch model: `dev` deploys the dev env; `main` deploys prod (see deploy-prod.yml).
 on:
   push:
-    branches: [main]
+    branches: [dev]
     paths:
       - 'src/**'
       - 'tests/**'

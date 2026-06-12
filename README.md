@@ -309,7 +309,7 @@ AWS deployment uses Neon (Postgres), SQS, 4 Lambdas, API Gateway, and EventBridg
 - `docs/ARCHITECTURE.md` — full diagram, component details, fan-out design, cost breakdown.
 - `terraform/README.md` — bring-up walkthrough.
 
-CI/CD: push to `main` → GitHub Actions runs Terraform apply → Prisma migrate → builds 4 Docker images → updates 4 Lambdas.
+CI/CD branch model: push to `dev` → deploys the **dev** env; push/merge to `main` → deploys **prod**. Each deploy runs Terraform apply → Prisma migrate → Docker image builds → Lambda updates.
 
 A separate **prod** env (`terraform/envs/prod`, us-west-2) runs on RDS + RDS Proxy inside a VPC. See `terraform/README.md` for its bring-up and the full local-access walkthrough.
 

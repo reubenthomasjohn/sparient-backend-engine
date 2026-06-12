@@ -62,6 +62,12 @@ resource "aws_instance" "bastion" {
     http_tokens = "required" # IMDSv2 only
   }
 
+  lifecycle {
+    # The SSM parameter resolves to the *latest* AL2023 AMI on every plan; without this,
+    # each new AMI release would replace the bastion (new instance id, dropped tunnels).
+    ignore_changes = [ami]
+  }
+
   tags = { Name = "${var.name_prefix}-bastion" }
 }
 

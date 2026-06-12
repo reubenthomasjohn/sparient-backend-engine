@@ -76,5 +76,5 @@ variable "github_repo_name" {
 
 variable "github_deploy_branch" {
   type    = string
-  default = "prod"
+  default = "main"
 }

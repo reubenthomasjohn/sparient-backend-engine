@@ -1,9 +1,11 @@
 name: Deploy (prod)
 
-# Prod deploys are deliberate: manual dispatch, or a push to the dedicated `prod` branch.
+# Branch model: `main` deploys prod; `dev` deploys the dev env (see deploy-dev.yml).
+# Prod deploys happen on merge to main, or via manual dispatch (from main only — the
+# OIDC trust policy is pinned to refs/heads/main).
 on:
   push:
-    branches: [prod]
+    branches: [main]
     paths:
       - 'src/**'
       - 'tests/**'
@@ -230,13 +232,28 @@ jobs:
           aws-region:     ${{ env.AWS_REGION }}
 
       - name: Update Lambda
+        id: update
         env:
           ECR_URI: ${{ needs.terraform.outputs[matrix.ecr_output] }}
         run: |
-          aws lambda update-function-code \
+          VERSION=$(aws lambda update-function-code \
             --function-name ${{ matrix.function }} \
             --image-uri $ECR_URI:${{ github.sha }} \
-            --publish
+            --publish --query Version --output text)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Wait for update
         run: aws lambda wait function-updated --function-name ${{ matrix.function }}
+
+      # API GW integrates with the `live` alias (provisioned concurrency), so the new
+      # version must be promoted explicitly — Terraform ignores alias drift (CI owns it).
+      - name: Point live alias at the new version (api only)
+        if: matrix.function == 'sparient-prod-api'
+        run: |
+          aws lambda wait function-active-v2 \
+            --function-name ${{ matrix.function }} \
+            --qualifier ${{ steps.update.outputs.version }}
+          aws lambda update-alias \
+            --function-name ${{ matrix.function }} \
+            --name live \
+            --function-version ${{ steps.update.outputs.version }}

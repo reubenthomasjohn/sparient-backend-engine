@@ -69,6 +69,10 @@ resource "aws_lambda_alias" "live" {
   name             = "live"
   function_name    = aws_lambda_function.this.function_name
   function_version = aws_lambda_function.this.version
+
+  lifecycle {
+    ignore_changes = [function_version] # CI repoints the alias on each deploy
+  }
 }
 
 resource "aws_lambda_provisioned_concurrency_config" "this" {
