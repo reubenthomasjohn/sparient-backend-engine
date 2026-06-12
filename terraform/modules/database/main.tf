@@ -119,6 +119,9 @@ resource "aws_db_parameter_group" "this" {
   parameter {
     name  = "rds.force_ssl"
     value = "1"
+    # RDS reports this parameter back as pending-reboot; without pinning, every plan
+    # shows a perpetual apply_method diff. The value is applied (instance is in-sync).
+    apply_method = "pending-reboot"
   }
 }
 
@@ -213,7 +216,9 @@ resource "aws_db_proxy_default_target_group" "this" {
 }
 
 resource "aws_db_proxy_target" "this" {
-  db_instance_identifier = aws_db_instance.this.id
+  # .identifier, not .id — since AWS provider 5.31 `id` is the DBI resource ID (db-XXXX…),
+  # which the proxy-target API rejects.
+  db_instance_identifier = aws_db_instance.this.identifier
   db_proxy_name          = aws_db_proxy.this.name
   target_group_name      = aws_db_proxy_default_target_group.this.name
 }

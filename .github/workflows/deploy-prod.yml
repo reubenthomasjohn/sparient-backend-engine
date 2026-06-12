@@ -245,15 +245,20 @@ jobs:
       - name: Wait for update
         run: aws lambda wait function-updated --function-name ${{ matrix.function }}
 
-      # API GW integrates with the `live` alias (provisioned concurrency), so the new
-      # version must be promoted explicitly — Terraform ignores alias drift (CI owns it).
+      # When provisioned concurrency is on, API GW integrates with the `live` alias, so the
+      # new version must be promoted explicitly — Terraform ignores alias drift (CI owns it).
+      # With provisioned concurrency off there is no alias and API GW uses $LATEST; skip.
       - name: Point live alias at the new version (api only)
         if: matrix.function == 'sparient-prod-api'
         run: |
-          aws lambda wait function-active-v2 \
-            --function-name ${{ matrix.function }} \
-            --qualifier ${{ steps.update.outputs.version }}
-          aws lambda update-alias \
-            --function-name ${{ matrix.function }} \
-            --name live \
-            --function-version ${{ steps.update.outputs.version }}
+          if aws lambda get-alias --function-name ${{ matrix.function }} --name live >/dev/null 2>&1; then
+            aws lambda wait function-active-v2 \
+              --function-name ${{ matrix.function }} \
+              --qualifier ${{ steps.update.outputs.version }}
+            aws lambda update-alias \
+              --function-name ${{ matrix.function }} \
+              --name live \
+              --function-version ${{ steps.update.outputs.version }}
+          else
+            echo "No live alias (provisioned concurrency disabled) - API GW integrates with \$LATEST; skipping."
+          fi
