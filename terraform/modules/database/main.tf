@@ -30,6 +30,33 @@ variable "db_username" {
   default = "sparient"
 }
 
+# Durability/HA knobs. Defaults preserve the original dev-grade behaviour so existing
+# callers (envs/dev) are unaffected; prod overrides these for safety.
+variable "multi_az" {
+  type    = bool
+  default = false
+}
+
+variable "backup_retention_period" {
+  type    = number
+  default = 1
+}
+
+variable "deletion_protection" {
+  type    = bool
+  default = false
+}
+
+variable "skip_final_snapshot" {
+  type    = bool
+  default = true
+}
+
+variable "final_snapshot_identifier" {
+  type    = string
+  default = null # required by AWS only when skip_final_snapshot = false
+}
+
 resource "random_password" "db" {
   length           = 32
   special          = true
@@ -49,13 +76,13 @@ resource "aws_db_subnet_group" "this" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.name_prefix}-rds-sg"
-  description = "RDS Postgres — reachable only from RDS Proxy"
+  description = "RDS Postgres - reachable only from RDS Proxy"
   vpc_id      = var.vpc_id
 }
 
 resource "aws_security_group" "proxy" {
   name        = "${var.name_prefix}-rds-proxy-sg"
-  description = "RDS Proxy — reachable only from Lambda SG"
+  description = "RDS Proxy - reachable only from Lambda SG"
   vpc_id      = var.vpc_id
 }
 
@@ -92,28 +119,33 @@ resource "aws_db_parameter_group" "this" {
   parameter {
     name  = "rds.force_ssl"
     value = "1"
+    # RDS reports this parameter back as pending-reboot; without pinning, every plan
+    # shows a perpetual apply_method diff. The value is applied (instance is in-sync).
+    apply_method = "pending-reboot"
   }
 }
 
 resource "aws_db_instance" "this" {
-  identifier              = "${var.name_prefix}-db"
-  engine                  = "postgres"
-  engine_version          = "16"
-  instance_class          = var.instance_class
-  allocated_storage       = var.allocated_storage_gb
-  storage_type            = "gp3"
-  storage_encrypted       = true
-  db_name                 = var.db_name
-  username                = var.db_username
-  password                = random_password.db.result
-  db_subnet_group_name    = aws_db_subnet_group.this.name
-  vpc_security_group_ids  = [aws_security_group.rds.id]
-  parameter_group_name    = aws_db_parameter_group.this.name
-  skip_final_snapshot     = true # dev
-  publicly_accessible     = false
-  multi_az                = false
-  backup_retention_period = 1
-  apply_immediately       = true
+  identifier                = "${var.name_prefix}-db"
+  engine                    = "postgres"
+  engine_version            = "16"
+  instance_class            = var.instance_class
+  allocated_storage         = var.allocated_storage_gb
+  storage_type              = "gp3"
+  storage_encrypted         = true
+  db_name                   = var.db_name
+  username                  = var.db_username
+  password                  = random_password.db.result
+  db_subnet_group_name      = aws_db_subnet_group.this.name
+  vpc_security_group_ids    = [aws_security_group.rds.id]
+  parameter_group_name      = aws_db_parameter_group.this.name
+  skip_final_snapshot       = var.skip_final_snapshot
+  final_snapshot_identifier = var.skip_final_snapshot ? null : coalesce(var.final_snapshot_identifier, "${var.name_prefix}-final-snapshot")
+  publicly_accessible       = false
+  multi_az                  = var.multi_az
+  backup_retention_period   = var.backup_retention_period
+  deletion_protection       = var.deletion_protection
+  apply_immediately         = true
 }
 
 # Proxy needs the DB credentials in Secrets Manager (RDS Proxy requirement —
@@ -184,7 +216,9 @@ resource "aws_db_proxy_default_target_group" "this" {
 }
 
 resource "aws_db_proxy_target" "this" {
-  db_instance_identifier = aws_db_instance.this.id
+  # .identifier, not .id — since AWS provider 5.31 `id` is the DBI resource ID (db-XXXX…),
+  # which the proxy-target API rejects.
+  db_instance_identifier = aws_db_instance.this.identifier
   db_proxy_name          = aws_db_proxy.this.name
   target_group_name      = aws_db_proxy_default_target_group.this.name
 }
@@ -192,5 +226,9 @@ resource "aws_db_proxy_target" "this" {
 output "proxy_endpoint" { value = aws_db_proxy.this.endpoint }
 output "db_name" { value = var.db_name }
 output "db_username" { value = var.db_username }
+output "db_password" {
+  value     = random_password.db.result
+  sensitive = true
+}
 output "db_password_param" { value = aws_ssm_parameter.db_password.name }
 output "rds_endpoint" { value = aws_db_instance.this.endpoint } # for one-off migrations via bastion/SSM

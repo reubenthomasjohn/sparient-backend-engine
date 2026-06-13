@@ -3,21 +3,45 @@ provider "aws" {
   profile = var.use_aws_profile ? var.aws_profile : null
 }
 
-provider "neon" {
-  api_key = var.neon_api_key
-}
-
 data "aws_caller_identity" "current" {}
 
-# --- Neon Postgres ---
-resource "neon_project" "this" {
-  name                      = var.name_prefix
-  region_id                 = "aws-${var.region}"
-  pg_version                = 16
-  history_retention_seconds = 21600
+# --- Networking: VPC + single NAT + public/private subnets ---
+module "networking" {
+  source      = "../../modules/networking"
+  name_prefix = var.name_prefix
+  azs         = var.azs
 }
 
-# --- ECR ---
+# Shared SG for all VPC Lambdas. Egress to the NAT (Canvas + AWS APIs); the database
+# module adds the ingress rule that lets this SG reach the RDS Proxy on 5432.
+resource "aws_security_group" "lambda" {
+  name        = "${var.name_prefix}-lambda-sg"
+  description = "Shared SG for VPC Lambdas - egress to NAT, ingress allowed to RDS Proxy"
+  vpc_id      = module.networking.vpc_id
+}
+
+resource "aws_vpc_security_group_egress_rule" "lambda_all" {
+  security_group_id = aws_security_group.lambda.id
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# --- RDS Postgres + RDS Proxy (connection pooling) ---
+module "database" {
+  source       = "../../modules/database"
+  name_prefix  = var.name_prefix
+  vpc_id       = module.networking.vpc_id
+  subnet_ids   = module.networking.private_subnet_ids
+  lambda_sg_id = aws_security_group.lambda.id
+
+  instance_class          = var.db_instance_class
+  backup_retention_period = var.db_backup_retention_period
+  deletion_protection     = true  # prod safety: block accidental `terraform destroy`
+  skip_final_snapshot     = false # take a final snapshot if the DB is ever destroyed
+  multi_az                = false # safe single-AZ
+}
+
+# --- ECR (5 app repos; the migrate repo is created standalone below) ---
 module "ecr" {
   source      = "../../modules/ecr"
   name_prefix = var.name_prefix
@@ -31,11 +55,11 @@ module "queues" {
 
 # S3 buckets are per-institution, created dynamically by InstitutionBucketService.
 # No Terraform-managed bucket resource — Lambdas have IAM access to sparient-* buckets.
-# The InstitutionBucketService configures S3 event notifications at bucket creation time.
 
 # --- Explainer-video bucket ---
 # accesshub-videos is an account-level shared asset managed by terraform/bootstrap (not by
-# any env), so both dev and prod just reference it by literal ARN in IAM below.
+# any env), so prod just references it by literal ARN in IAM below. Tearing down either env
+# leaves the bucket untouched.
 
 # --- Responses SQS queue (S3 event → SQS → responses Lambda) ---
 resource "aws_sqs_queue" "responses_dlq" {
@@ -53,7 +77,6 @@ resource "aws_sqs_queue" "responses" {
 }
 
 # S3 → SQS policy: allow ANY sparient-* bucket to send notifications to the responses queue.
-# Per-institution buckets are created dynamically, so the policy uses a wildcard condition.
 data "aws_iam_policy_document" "allow_s3_to_sqs" {
   statement {
     actions   = ["sqs:SendMessage"]
@@ -94,6 +117,12 @@ resource "aws_iam_role" "lambda_exec" {
 resource "aws_iam_role_policy_attachment" "basic" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# VPC Lambdas need ENI create/delete permissions.
+resource "aws_iam_role_policy_attachment" "vpc_access" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 data "aws_iam_policy_document" "lambda_runtime" {
@@ -144,30 +173,41 @@ resource "aws_iam_role_policy" "lambda_runtime" {
 
 # --- Env vars shared by all Lambdas ---
 locals {
+  # The app connects to the RDS Proxy (not RDS directly) using the proxy's secret-backed
+  # credentials. verify-full + the bundled Amazon RDS CA (NODE_EXTRA_CA_CERTS) verify the
+  # proxy's TLS cert. Password chars are URL-safe (override_special = "_-"), so no encoding.
+  database_url = "postgresql://${module.database.db_username}:${module.database.db_password}@${module.database.proxy_endpoint}:5432/${module.database.db_name}?sslmode=verify-full"
+
   common_env = {
     NODE_ENV                            = "production"
     AWS_NODEJS_CONNECTION_REUSE_ENABLED = "1"
-    DATABASE_URL                        = neon_project.this.connection_uri
+    DATABASE_URL                        = local.database_url
+    NODE_EXTRA_CA_CERTS                 = "/var/task/certs/rds-global-bundle.pem"
     SQS_DISCOVERY_URL                   = module.queues.discovery_queue_url
     SQS_WRITEBACK_URL                   = module.queues.writeback_queue_url
     SQS_RESPONSES_QUEUE_ARN             = aws_sqs_queue.responses.arn
     QUEUE_START_CONSUMERS               = "false"
   }
+
+  lambda_vpc_subnets = module.networking.private_subnet_ids
+  lambda_sg_ids      = [aws_security_group.lambda.id]
 }
 
 # --- Lambdas ---
 
 # Discovery: tick + institution fan-out (starts SFN executions)
 module "discovery_worker" {
-  source          = "../../modules/lambda-worker"
-  name_prefix     = var.name_prefix
-  worker_name     = "discovery"
-  ecr_repo_url    = module.ecr.repo_urls["sparient-discovery"]
-  queue_arn       = module.queues.discovery_queue_arn
-  queue_url       = module.queues.discovery_queue_url
-  dlq_arn         = module.queues.discovery_queue_arn
-  max_concurrency = var.discovery_max_concurrency
-  role_arn        = aws_iam_role.lambda_exec.arn
+  source             = "../../modules/lambda-worker"
+  name_prefix        = var.name_prefix
+  worker_name        = "discovery"
+  ecr_repo_url       = module.ecr.repo_urls["sparient-discovery"]
+  queue_arn          = module.queues.discovery_queue_arn
+  queue_url          = module.queues.discovery_queue_url
+  dlq_arn            = module.queues.discovery_queue_arn
+  max_concurrency    = var.discovery_max_concurrency
+  role_arn           = aws_iam_role.lambda_exec.arn
+  vpc_subnet_ids     = local.lambda_vpc_subnets
+  security_group_ids = local.lambda_sg_ids
   env = merge(local.common_env, {
     COURSE_WORKFLOW_ARN = aws_sfn_state_machine.course_workflow.arn
   })
@@ -188,6 +228,11 @@ resource "aws_lambda_function" "course_workflow" {
   timeout       = 900
   memory_size   = 1024
 
+  vpc_config {
+    subnet_ids         = local.lambda_vpc_subnets
+    security_group_ids = local.lambda_sg_ids
+  }
+
   environment {
     variables = local.common_env
   }
@@ -201,34 +246,37 @@ resource "aws_lambda_function" "course_workflow" {
 
 # Responses: S3 event → SQS → Lambda
 module "responses_worker" {
-  source          = "../../modules/lambda-worker"
-  name_prefix     = var.name_prefix
-  worker_name     = "responses"
-  ecr_repo_url    = module.ecr.repo_urls["sparient-responses"]
-  queue_arn       = aws_sqs_queue.responses.arn
-  queue_url       = aws_sqs_queue.responses.url
-  dlq_arn         = aws_sqs_queue.responses_dlq.arn
-  max_concurrency = 5
-  role_arn        = aws_iam_role.lambda_exec.arn
-  env             = local.common_env
+  source             = "../../modules/lambda-worker"
+  name_prefix        = var.name_prefix
+  worker_name        = "responses"
+  ecr_repo_url       = module.ecr.repo_urls["sparient-responses"]
+  queue_arn          = aws_sqs_queue.responses.arn
+  queue_url          = aws_sqs_queue.responses.url
+  dlq_arn            = aws_sqs_queue.responses_dlq.arn
+  max_concurrency    = 5
+  role_arn           = aws_iam_role.lambda_exec.arn
+  vpc_subnet_ids     = local.lambda_vpc_subnets
+  security_group_ids = local.lambda_sg_ids
+  env                = local.common_env
 }
 
-# Writeback: RemediationService → SQS → Lambda → Canvas. Concurrency capped low
-# to respect Canvas's rate limits (file uploads are the most rate-limited endpoint).
-# Timeout capped at 150s so queue visibility (900s) keeps the AWS-recommended ≥ 6×
-# ratio — Canvas file replace is typically sub-30s, 150s is generous headroom.
+# Writeback: RemediationService → SQS → Lambda → Canvas. Concurrency capped low to
+# respect Canvas's rate limits. Timeout 150s keeps the AWS-recommended ≥ 6× ratio to
+# the queue's 900s visibility timeout.
 module "writeback_worker" {
-  source          = "../../modules/lambda-worker"
-  name_prefix     = var.name_prefix
-  worker_name     = "writeback"
-  ecr_repo_url    = module.ecr.repo_urls["sparient-writeback"]
-  queue_arn       = module.queues.writeback_queue_arn
-  queue_url       = module.queues.writeback_queue_url
-  dlq_arn         = module.queues.writeback_dlq_arn
-  max_concurrency = var.writeback_max_concurrency
-  timeout_seconds = 150
-  role_arn        = aws_iam_role.lambda_exec.arn
-  env             = local.common_env
+  source             = "../../modules/lambda-worker"
+  name_prefix        = var.name_prefix
+  worker_name        = "writeback"
+  ecr_repo_url       = module.ecr.repo_urls["sparient-writeback"]
+  queue_arn          = module.queues.writeback_queue_arn
+  queue_url          = module.queues.writeback_queue_url
+  dlq_arn            = module.queues.writeback_dlq_arn
+  max_concurrency    = var.writeback_max_concurrency
+  timeout_seconds    = 150
+  role_arn           = aws_iam_role.lambda_exec.arn
+  vpc_subnet_ids     = local.lambda_vpc_subnets
+  security_group_ids = local.lambda_sg_ids
+  env                = local.common_env
 }
 
 # API
@@ -238,9 +286,55 @@ module "api" {
   ecr_repo_url            = module.ecr.repo_urls["sparient-api"]
   role_arn                = aws_iam_role.lambda_exec.arn
   provisioned_concurrency = var.api_provisioned_concurrency
+  vpc_subnet_ids          = local.lambda_vpc_subnets
+  security_group_ids      = local.lambda_sg_ids
   env = merge(local.common_env, {
     COURSE_WORKFLOW_ARN = aws_sfn_state_machine.course_workflow.arn
   })
+}
+
+# --- Migration runner ---
+# Standalone ECR repo + Lambda (image built from Dockerfile.migrate). No event source —
+# CI invokes it after `terraform apply` to run `prisma migrate deploy` inside the VPC,
+# where the private RDS Proxy is reachable.
+resource "aws_ecr_repository" "migrate" {
+  name                 = "${var.name_prefix}-migrate"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_cloudwatch_log_group" "migrate" {
+  name              = "/aws/lambda/${var.name_prefix}-migrate"
+  retention_in_days = 14
+}
+
+resource "aws_lambda_function" "migrate" {
+  function_name = "${var.name_prefix}-migrate"
+  role          = aws_iam_role.lambda_exec.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.migrate.repository_url}:bootstrap"
+  architectures = ["x86_64"]
+  timeout       = 300
+  memory_size   = 1024
+
+  vpc_config {
+    subnet_ids         = local.lambda_vpc_subnets
+    security_group_ids = local.lambda_sg_ids
+  }
+
+  environment {
+    variables = local.common_env
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  depends_on = [aws_cloudwatch_log_group.migrate]
 }
 
 # --- Step Functions: institution workflow ---

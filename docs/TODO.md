@@ -1,5 +1,20 @@
 # TODO
 
+## Prod: re-enable API provisioned concurrency after Lambda quota increase
+
+The us-west-2 Lambda concurrent-executions quota is the new-account floor (10), which (a)
+makes provisioned concurrency impossible (unreserved must stay >= 10) and (b) is a real
+throttling risk under sync bursts — discovery (5) + writeback (3) + responses (5) caps
+already exceed it, before the course-workflow SFN fan-out and API traffic.
+
+- [ ] Submit the Service Quotas increase for "Concurrent executions" in **us-west-2** to
+      1000 (needs an identity with `servicequotas:RequestServiceQuotaIncrease`; the
+      `sparient` IAM user was denied — use the console admin identity).
+- [ ] Once approved, decide on warm API: set `api_provisioned_concurrency = 1` in
+      `terraform/envs/prod/terraform.tfvars` and `terraform apply` (~$5/mo, removes API
+      cold starts for Connectivo polls). The deploy workflow already promotes the `live`
+      alias automatically when it exists.
+
 ## HIGH PRIORITY (#1) — Single-file sync trigger endpoint
 
 Parity with the per-course sync trigger (`POST /api/v1/sync/institutions/:institutionId/courses/:canvasCourseId`). A user (Canvas LTI / admin UI) needs to trigger remediation for one specific file on demand, without waiting for the next scheduled sync window.

@@ -45,4 +45,8 @@ COPY --from=build /build/dist/index.js ${LAMBDA_TASK_ROOT}/index.js
 # All production node_modules (prisma, pg, axios, etc).
 COPY --from=build /build/node_modules ${LAMBDA_TASK_ROOT}/node_modules
 
+# Amazon RDS global CA bundle. Inert unless NODE_EXTRA_CA_CERTS points at it (prod only),
+# where it lets pg verify the RDS Proxy's TLS cert under sslmode=verify-full.
+COPY certs ${LAMBDA_TASK_ROOT}/certs
+
 CMD ["index.handler"]
