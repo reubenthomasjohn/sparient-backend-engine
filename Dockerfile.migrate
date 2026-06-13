@@ -18,7 +18,11 @@ COPY tsconfig.json prisma.config.ts ./
 COPY src ./src
 
 # Generate the client (harmless for migrate, keeps the image self-consistent).
-RUN npx prisma generate
+# prisma.config.ts is present here, so Prisma 7 loads it and eagerly resolves
+# env('DATABASE_URL'); supply a build-time placeholder (generate needs no real DB).
+# The real DATABASE_URL is injected as a Lambda env var at runtime.
+RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder" \
+      npx prisma generate
 
 # Bundle just the handler; node_modules (incl. the Prisma CLI it shells out to) is
 # copied wholesale into the runtime stage below.
