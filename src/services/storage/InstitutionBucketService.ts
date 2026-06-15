@@ -5,7 +5,6 @@ import {
   PutBucketNotificationConfigurationCommand,
 } from '@aws-sdk/client-s3';
 import { config } from '../../config';
-import { getBucketName } from '../../config/s3Bucket';
 import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 
@@ -75,12 +74,7 @@ async function configureResponseNotification(
   logger.info('InstitutionBucket: response notification configured', { bucketName, sqsArn });
 }
 
-export async function provisionInstitutionBucket(
-  institutionId: string,
-  s3BucketOverride?: string | null,
-): Promise<string> {
-  const bucketName = getBucketName(institutionId, s3BucketOverride);
-
+export async function provisionInstitutionBucket(bucketName: string): Promise<string> {
   await createBucket(bucketName);
   await blockPublicAccess(bucketName);
 

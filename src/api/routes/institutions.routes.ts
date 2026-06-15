@@ -6,8 +6,14 @@ import { Errors } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { syncConfigSchema, syncConfigPatchSchema } from '../../services/sync/syncConfig';
 import { provisionInstitutionBucket } from '../../services/storage/InstitutionBucketService';
+import { getInstitutionBucketName } from '../../config/s3Bucket';
 
 const router = Router();
+
+// Slug max length. The slug becomes part of the bucket name (<prefix>-<slug>, capped
+// at S3's 63 chars). The longest configured prefix is "sparient-prod-accesshub" (23) +
+// "-" (1) = 24, leaving 39. getInstitutionBucketName guards the final length too.
+const SLUG_MAX = 39;
 
 // Body schema for POST /institutions. Canvas-only for now — sourceType is a
 // literal rather than the full SourceType enum so a sharepoint payload 400s with
@@ -18,7 +24,7 @@ const createInstitutionSchema = z.object({
   slug: z
     .string()
     .min(1)
-    .max(100)
+    .max(SLUG_MAX)
     .regex(/^[a-z0-9-]+$/, 'slug must be lowercase alphanumeric/hyphens'),
   sourceType: z.literal('canvas'),
   credentials: z.object({
@@ -51,7 +57,7 @@ const PUBLIC_INSTITUTION_SELECT = {
 } as const;
 
 // POST /institutions
-// Register a new institution and provision its S3 bucket (sparient-<id>, in the
+// Register a new institution and provision its S3 bucket (<prefix>-<slug>, in the
 // Lambda's region) wired to the responses queue — after this the tick scheduler
 // can sync it with no further setup.
 //
@@ -59,10 +65,11 @@ const PUBLIC_INSTITUTION_SELECT = {
 // — this endpoint stores credentials and creates AWS resources and MUST NOT ship
 // to a publicly-reachable prod long-term.
 //
-// Two-phase (DB row, then AWS): not a single transaction. If provisioning fails
-// we delete the just-created row so a retry starts clean and no half-onboarded
-// institution lingers. provisionInstitutionBucket is idempotent, so a retry after
-// a partial failure (bucket made, notification not) still succeeds.
+// Ordering: storage-first, then the DB row. The bucket name is derived from the
+// (unique, immutable) slug — known before the insert — so provisioning is
+// idempotent: a retry reuses the same bucket instead of orphaning a new one. The
+// resolved name is stored in s3Bucket so reads stay stable. We pre-check the slug
+// to 409 before touching S3, and still catch the create-time P2002 to cover races.
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = createInstitutionSchema.safeParse(req.body);
@@ -75,6 +82,29 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     }
     const data = parsed.data;
 
+    // Pre-check slug uniqueness so we don't provision a bucket for a taken slug.
+    const clash = await prisma.institution.findUnique({
+      where: { slug: data.slug },
+      select: { id: true },
+    });
+    if (clash) {
+      throw Errors.conflict(`Institution with slug '${data.slug}' already exists`);
+    }
+
+    // Provision storage first. Idempotent + deterministic name (from slug), so a
+    // failure here leaves nothing to clean up — a retry reuses the same bucket.
+    const bucketName = getInstitutionBucketName(data.slug);
+    try {
+      await provisionInstitutionBucket(bucketName);
+    } catch (err) {
+      logger.error('Institution bucket provisioning failed', {
+        slug: data.slug,
+        bucketName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw Errors.badGateway('Failed to provision institution storage; please retry');
+    }
+
     let institution;
     try {
       institution = await prisma.institution.create({
@@ -83,6 +113,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
           slug: data.slug,
           sourceType: data.sourceType,
           credentials: data.credentials,
+          s3Bucket: bucketName,
           ...(data.writebackOptIn !== undefined && { writebackOptIn: data.writebackOptIn }),
           ...(data.syncEnabled !== undefined && { syncEnabled: data.syncEnabled }),
           ...(data.syncTime !== undefined && { syncTime: data.syncTime }),
@@ -91,33 +122,15 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         select: PUBLIC_INSTITUTION_SELECT,
       });
     } catch (err) {
-      // Unique-constraint on slug → 409 instead of a generic 500.
+      // Lost a slug race after the pre-check. The bucket we just provisioned is the
+      // exact one the winning row uses (same slug → same name), so nothing to undo.
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw Errors.conflict(`Institution with slug '${data.slug}' already exists`);
       }
       throw err;
     }
 
-    // Provision the bucket + response notification. On failure, roll back the row.
-    try {
-      const bucketName = await provisionInstitutionBucket(institution.id);
-      logger.info('Institution registered', { institutionId: institution.id, bucketName });
-    } catch (err) {
-      await prisma.institution
-        .delete({ where: { id: institution.id } })
-        .catch((delErr) =>
-          logger.error('Failed to roll back institution after provisioning error', {
-            institutionId: institution!.id,
-            error: delErr instanceof Error ? delErr.message : String(delErr),
-          }),
-        );
-      logger.error('Institution bucket provisioning failed; rolled back row', {
-        institutionId: institution.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw Errors.badGateway('Failed to provision institution storage; please retry');
-    }
-
+    logger.info('Institution registered', { institutionId: institution.id, bucketName });
     res.status(201).json({ success: true, data: institution });
   } catch (err) {
     next(err);

@@ -13,6 +13,10 @@ import { provisionInstitutionBucket } from '../../../src/services/storage/Instit
 
 const URL = '/api/v1/institutions';
 
+// AWS_REGION is stubbed to us-east-2 in setup; INSTITUTION_BUCKET_PREFIX is unset,
+// so config falls back to "sparient" → expected bucket "sparient-<slug>".
+const EXPECTED_BUCKET = 'sparient-acme';
+
 function validBody(overrides: Record<string, unknown> = {}) {
   return {
     name: 'Acme University',
@@ -31,7 +35,7 @@ function createdRow(overrides: Record<string, unknown> = {}) {
     slug: 'acme',
     sourceType: 'canvas',
     writebackOptIn: false,
-    s3Bucket: null,
+    s3Bucket: EXPECTED_BUCKET,
     syncEnabled: true,
     syncTime: '02:00',
     syncConfig: null,
@@ -43,11 +47,13 @@ function createdRow(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  vi.mocked(provisionInstitutionBucket).mockResolvedValue('sparient-inst-1');
+  vi.mocked(provisionInstitutionBucket).mockResolvedValue(EXPECTED_BUCKET);
+  // Default: slug is free.
+  prismaMock.institution.findUnique.mockResolvedValue(null as any);
 });
 
 describe('POST /api/v1/institutions', () => {
-  it('201s, creates the row, provisions the bucket, and never returns credentials', async () => {
+  it('201s: provisions the slug-named bucket, stores it, never returns credentials', async () => {
     prismaMock.institution.create.mockResolvedValue(createdRow() as any);
 
     const res = await request(app).post(URL).send(validBody());
@@ -55,15 +61,33 @@ describe('POST /api/v1/institutions', () => {
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
     expect(res.body.data.id).toBe('inst-1');
+    expect(res.body.data.s3Bucket).toBe(EXPECTED_BUCKET);
     expect(res.body.data).not.toHaveProperty('credentials');
-    expect(provisionInstitutionBucket).toHaveBeenCalledWith('inst-1');
+
+    // Bucket provisioned with the slug-derived name (not an id), before the row write.
+    expect(provisionInstitutionBucket).toHaveBeenCalledWith(EXPECTED_BUCKET);
+    expect(prismaMock.institution.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ slug: 'acme', s3Bucket: EXPECTED_BUCKET }),
+      }),
+    );
   });
 
-  it('400s on a missing required field and never touches the DB', async () => {
+  it('409s on a pre-existing slug, before any provisioning or create', async () => {
+    prismaMock.institution.findUnique.mockResolvedValue({ id: 'other' } as any);
+
+    const res = await request(app).post(URL).send(validBody());
+
+    expect(res.status).toBe(409);
+    expect(provisionInstitutionBucket).not.toHaveBeenCalled();
+    expect(prismaMock.institution.create).not.toHaveBeenCalled();
+  });
+
+  it('400s on a missing required field and never touches the DB or S3', async () => {
     const res = await request(app).post(URL).send(validBody({ slug: undefined }));
 
     expect(res.status).toBe(400);
-    expect(prismaMock.institution.create).not.toHaveBeenCalled();
+    expect(prismaMock.institution.findUnique).not.toHaveBeenCalled();
     expect(provisionInstitutionBucket).not.toHaveBeenCalled();
   });
 
@@ -71,17 +95,24 @@ describe('POST /api/v1/institutions', () => {
     const res = await request(app).post(URL).send(validBody({ sourceType: 'sharepoint' }));
 
     expect(res.status).toBe(400);
-    expect(prismaMock.institution.create).not.toHaveBeenCalled();
+    expect(provisionInstitutionBucket).not.toHaveBeenCalled();
   });
 
   it('400s on an invalid slug (uppercase/spaces)', async () => {
     const res = await request(app).post(URL).send(validBody({ slug: 'Acme U' }));
 
     expect(res.status).toBe(400);
-    expect(prismaMock.institution.create).not.toHaveBeenCalled();
+    expect(provisionInstitutionBucket).not.toHaveBeenCalled();
   });
 
-  it('409s on a duplicate slug (Prisma P2002) without provisioning', async () => {
+  it('400s on an over-long slug (would overflow the 63-char bucket name)', async () => {
+    const res = await request(app).post(URL).send(validBody({ slug: 'a'.repeat(40) }));
+
+    expect(res.status).toBe(400);
+    expect(provisionInstitutionBucket).not.toHaveBeenCalled();
+  });
+
+  it('409s on a create-time slug race (Prisma P2002)', async () => {
     prismaMock.institution.create.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Unique constraint', {
         code: 'P2002',
@@ -92,17 +123,16 @@ describe('POST /api/v1/institutions', () => {
     const res = await request(app).post(URL).send(validBody());
 
     expect(res.status).toBe(409);
-    expect(provisionInstitutionBucket).not.toHaveBeenCalled();
+    // Bucket was provisioned (deterministic) — that's fine, no rollback needed.
+    expect(provisionInstitutionBucket).toHaveBeenCalledWith(EXPECTED_BUCKET);
   });
 
-  it('502s and rolls back the row when provisioning fails', async () => {
-    prismaMock.institution.create.mockResolvedValue(createdRow() as any);
-    prismaMock.institution.delete.mockResolvedValue(createdRow() as any);
+  it('502s when provisioning fails, without creating a row', async () => {
     vi.mocked(provisionInstitutionBucket).mockRejectedValue(new Error('S3 down'));
 
     const res = await request(app).post(URL).send(validBody());
 
     expect(res.status).toBe(502);
-    expect(prismaMock.institution.delete).toHaveBeenCalledWith({ where: { id: 'inst-1' } });
+    expect(prismaMock.institution.create).not.toHaveBeenCalled();
   });
 });
