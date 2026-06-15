@@ -35,7 +35,22 @@ export async function discoverCourses(input: DiscoverCoursesInput): Promise<Disc
   });
   const sourceClient = SourceRegistry.getClient(institution);
 
-  const discovered = await sourceClient.getCourses();
+  // Single-course sync fetches the course directly (bypassing the account listing and its
+  // term/state filters) so an explicit request always resolves — even for a course in a
+  // concluded term or a sub-account that the listing wouldn't return. Full sync lists all.
+  let discovered;
+  if (input.singleCourseId) {
+    const one = await sourceClient.getCourse(input.singleCourseId);
+    discovered = one ? [one] : [];
+    logger.info('DiscoverCourses: single-course fetch', {
+      institutionId: input.institutionId,
+      singleCourseId: input.singleCourseId,
+      found: discovered.length > 0,
+    });
+  } else {
+    discovered = await sourceClient.getCourses();
+  }
+
   for (const dc of discovered) {
     await prisma.course.upsert({
       where: {

@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import JSONBig from 'json-bigint';
-import { CanvasFile, CanvasFolder, CanvasTerm } from '../../../types/canvas';
+import { CanvasCourse, CanvasFile, CanvasFolder, CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
 
 // Canvas Enterprise tenants assign integer IDs exceeding Number.MAX_SAFE_INTEGER
@@ -110,6 +110,19 @@ export class CanvasClient {
   async getFile(fileExternalId: string): Promise<CanvasFile> {
     const response = await this.http.get<CanvasFile>(`/files/${fileExternalId}`);
     return response.data;
+  }
+
+  // Fetch a single course directly by id. Returns null on 404 (course missing or not
+  // visible to this token) so callers can treat "not found" as an empty result rather
+  // than an error. Used by single-course discovery to bypass the account listing.
+  async getCourse(courseExternalId: string): Promise<CanvasCourse | null> {
+    try {
+      const response = await this.http.get<CanvasCourse>(`/courses/${courseExternalId}`);
+      return response.data;
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+      throw err;
+    }
   }
 
   // Fetches all enrollment terms for the account.

@@ -410,7 +410,7 @@
                   "language": "json"
                 }
               },
-              "raw": "{\n  \"name\": \"Acme University\",\n  \"slug\": \"acme\",\n  \"sourceType\": \"canvas\",\n  \"credentials\": {\n    \"domain\": \"{{canvasDomain}}\",\n    \"account_id\": \"{{canvasAccountId}}\",\n    \"api_token\": \"{{canvasApiToken}}\"\n  },\n  \"writebackOptIn\": false,\n  \"syncEnabled\": true,\n  \"syncTime\": \"02:00\",\n  \"syncConfig\": {\n    \"excludedCanvasCourseIds\": [],\n    \"allowedFileTypes\": [\n      \"pdf\",\n      \"docx\",\n      \"pptx\",\n      \"xlsx\",\n      \"jpg\",\n      \"png\"\n    ],\n    \"allowedCourseStates\": [\n      \"available\",\n      \"unpublished\"\n    ],\n    \"maxFileSizeBytes\": null,\n    \"skipLockedFiles\": false,\n    \"skipHiddenFiles\": false,\n    \"writebackRequiresReviewAck\": false\n  }\n}"
+              "raw": "{\n  \"name\": \"Acme University\",\n  \"slug\": \"acme\",\n  \"sourceType\": \"canvas\",\n  \"credentials\": {\n    \"domain\": \"{{canvasDomain}}\",\n    \"account_id\": \"{{canvasAccountId}}\",\n    \"api_token\": \"{{canvasApiToken}}\"\n  },\n  \"writebackOptIn\": false,\n  \"syncEnabled\": true,\n  \"syncTime\": \"02:00\",\n  \"syncConfig\": {\n    \"excludedCanvasCourseIds\": [],\n    \"allowedTermIds\": [],\n    \"allowedFileTypes\": [\n      \"pdf\",\n      \"docx\",\n      \"pptx\",\n      \"xlsx\",\n      \"jpg\",\n      \"png\"\n    ],\n    \"allowedCourseStates\": [\n      \"available\",\n      \"unpublished\"\n    ],\n    \"maxFileSizeBytes\": null,\n    \"skipLockedFiles\": false,\n    \"skipHiddenFiles\": false,\n    \"writebackRequiresReviewAck\": false\n  }\n}"
             },
             "url": "{{baseUrl}}/api/v1/institutions"
           }
@@ -433,7 +433,7 @@
                   "language": "json"
                 }
               },
-              "raw": "{\n  \"name\": \"Acme University (renamed)\",\n  \"syncEnabled\": true,\n  \"syncTime\": \"03:30\",\n  \"writebackOptIn\": false,\n  \"syncConfig\": {\n    \"skipLockedFiles\": true\n  }\n}"
+              "raw": "{\n  \"name\": \"Acme University (renamed)\",\n  \"syncEnabled\": true,\n  \"syncTime\": \"03:30\",\n  \"writebackOptIn\": false,\n  \"syncConfig\": {\n    \"allowedTermIds\": [],\n    \"skipLockedFiles\": true\n  }\n}"
             },
             "url": "{{baseUrl}}/api/v1/institutions/{{institutionId}}"
           }

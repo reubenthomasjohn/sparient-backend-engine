@@ -47,6 +47,10 @@ const fileTypeEnumWithAliases = z.preprocess(
 // fresh array — no shared-reference footgun if a future consumer mutates.
 const defaults = {
   excludedCanvasCourseIds: () => [] as string[],
+  // Canvas enrollment_term_ids discovery is restricted to. Empty (default) = no explicit
+  // term restriction; getCourses falls back to "all currently-active terms". When set,
+  // ONLY these terms sync (even concluded ones) and the active-term check is bypassed.
+  allowedTermIds: () => [] as string[],
   allowedFileTypes: () => [...DEFAULT_FILE_TYPES],
   allowedCourseStates: () => ['available' as const, 'unpublished' as const],
   maxFileSizeBytes: () => null as number | null,
@@ -71,6 +75,7 @@ const defaults = {
 // ---------------------------------------------------------------------------
 export const syncConfigSchema = z.object({
   excludedCanvasCourseIds: z.array(z.string()).default(defaults.excludedCanvasCourseIds),
+  allowedTermIds: z.array(z.string()).default(defaults.allowedTermIds),
   allowedFileTypes: z.array(fileTypeEnumWithAliases).default(defaults.allowedFileTypes),
   allowedCourseStates: z.array(z.enum(COURSE_STATES)).default(defaults.allowedCourseStates),
   maxFileSizeBytes: z.number().int().positive().nullable().default(defaults.maxFileSizeBytes),
@@ -88,6 +93,7 @@ export type SyncConfig = z.infer<typeof syncConfigSchema>;
 // ---------------------------------------------------------------------------
 export const syncConfigPatchSchema = z.object({
   excludedCanvasCourseIds: z.array(z.string()).optional(),
+  allowedTermIds: z.array(z.string()).optional(),
   allowedFileTypes: z.array(fileTypeEnumWithAliases).optional(),
   allowedCourseStates: z.array(z.enum(COURSE_STATES)).optional(),
   maxFileSizeBytes: z.number().int().positive().nullable().optional(),
@@ -104,6 +110,7 @@ export type SyncConfigPatch = z.infer<typeof syncConfigPatchSchema>;
 // ---------------------------------------------------------------------------
 export interface EffectiveSyncConfig extends SyncConfig {
   excludedCourseIdSet: Set<string>;
+  allowedTermIdSet: Set<string>;
   allowedMimeTypes: string[];
   allowedExtensions: Set<string>;
 }
@@ -156,6 +163,7 @@ export function getEffectiveSyncConfig(
   logger.info('syncConfig: resolved', {
     institutionId: institution.id,
     excludedCanvasCourseIds: config.excludedCanvasCourseIds,
+    allowedTermIds: config.allowedTermIds,
     allowedFileTypes,
     allowedCourseStates,
     maxFileSizeBytes: config.maxFileSizeBytes,
@@ -169,6 +177,7 @@ export function getEffectiveSyncConfig(
     allowedFileTypes,
     allowedCourseStates,
     excludedCourseIdSet: new Set(config.excludedCanvasCourseIds),
+    allowedTermIdSet: new Set(config.allowedTermIds),
     allowedMimeTypes: allowedFileTypes.flatMap((t) => FILE_TYPE_REGISTRY[t].mime),
     allowedExtensions: new Set(allowedFileTypes.flatMap((t) => FILE_TYPE_REGISTRY[t].extensions)),
   };
