@@ -16,13 +16,24 @@ const s3 = new S3Client({ region: config.aws.region });
 // bucket updates the notification config without error.
 
 async function createBucket(bucketName: string): Promise<void> {
-  await s3.send(new CreateBucketCommand({
-    Bucket: bucketName,
-    CreateBucketConfiguration: {
-      LocationConstraint: config.aws.region as 'us-east-2',
-    },
-  }));
-  logger.info('InstitutionBucket: created', { bucketName });
+  try {
+    await s3.send(new CreateBucketCommand({
+      Bucket: bucketName,
+      CreateBucketConfiguration: {
+        LocationConstraint: config.aws.region as 'us-east-2',
+      },
+    }));
+    logger.info('InstitutionBucket: created', { bucketName });
+  } catch (err: unknown) {
+    // Already ours → treat as created so onboarding stays idempotent (a retry
+    // after a partial provisioning failure re-runs this safely). A name owned by
+    // someone else (BucketAlreadyExists) is a real conflict and still throws.
+    if (err instanceof Error && err.name === 'BucketAlreadyOwnedByYou') {
+      logger.info('InstitutionBucket: already owned, reusing', { bucketName });
+      return;
+    }
+    throw err;
+  }
 }
 
 async function blockPublicAccess(bucketName: string): Promise<void> {
