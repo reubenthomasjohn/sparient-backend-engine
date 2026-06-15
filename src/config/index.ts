@@ -26,6 +26,14 @@ const configSchema = z.object({
   jobs: z.object({
     retryBaseDelayMinutes: z.coerce.number().default(30),
   }),
+  storage: z.object({
+    // Prefix for per-institution buckets created at registration:
+    //   <institutionBucketPrefix>-<slug>  (e.g. sparient-prod-accesshub-acme)
+    // MUST start with "sparient-" to stay inside the Lambda's sparient-* IAM grant
+    // and the responses-queue policy. Set per-env in Terraform (includes the stage,
+    // so dev and prod never collide on a shared slug in the same account).
+    institutionBucketPrefix: z.string().default("sparient"),
+  }),
   // If queue URLs are set, SqsQueue is used; otherwise InMemoryQueue runs in-process.
   // Local dev can leave these unset — the consumers are started by server.ts.
   queue: z.object({
@@ -53,6 +61,9 @@ const parsed = configSchema.safeParse({
   },
   jobs: {
     retryBaseDelayMinutes: process.env.RETRY_BASE_DELAY_MINUTES,
+  },
+  storage: {
+    institutionBucketPrefix: process.env.INSTITUTION_BUCKET_PREFIX,
   },
   queue: {
     discoveryUrl: process.env.SQS_DISCOVERY_URL,
