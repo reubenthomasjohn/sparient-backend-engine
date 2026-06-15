@@ -142,15 +142,14 @@ describe('CanvasSourceClient.getCourses — term filter', () => {
     expect(result).toHaveLength(1);
   });
 
-  it('requests both "available" and "unpublished" course states, with NO enrollment_type filter', async () => {
-    // Locks in product decision: unpublished courses are synced (teachers can
-    // prep next semester's accessibility before publish); completed/deleted
-    // courses are not. The enrollment_type filter was removed — it isn't a
-    // documented param on the account-courses endpoint and dropped courses
-    // for some admin tokens.
+  it('maps course states to Canvas state[] values (unpublished -> created/claimed), no enrollment_type', async () => {
+    // Canvas has no "unpublished" state value — sending it matches zero courses.
+    // The default allowlist (available + unpublished) must reach Canvas as
+    // available + created + claimed. enrollment_type was also removed (undocumented
+    // on this endpoint, dropped courses for some tokens).
     await runWith({ terms: [], courses: [] });
     const [, params] = mockedClient.getPaginated.mock.calls[0];
-    expect(params).toEqual({ state: ['available', 'unpublished'] });
+    expect(params).toEqual({ state: ['available', 'created', 'claimed'] });
     expect(params).not.toHaveProperty('enrollment_type');
   });
 });

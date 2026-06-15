@@ -16,7 +16,20 @@ import {
 } from "../../../types/source";
 import { CanvasCourse, CanvasFile, CanvasTerm } from "../../../types/canvas";
 import { logger } from "../../../utils/logger";
-import { EffectiveSyncConfig, getEffectiveSyncConfig } from "../../sync/syncConfig";
+import {
+  CourseState,
+  EffectiveSyncConfig,
+  getEffectiveSyncConfig,
+} from "../../sync/syncConfig";
+
+// The engine's course-state vocabulary -> Canvas's state[] enum on
+// /accounts/:id/courses. Canvas has NO "unpublished" state value (sending it
+// matches zero courses); pre-publish courses live in the created/claimed states.
+const CANVAS_STATE_MAP: Record<CourseState, string[]> = {
+  available: ["available"],
+  unpublished: ["created", "claimed"],
+  completed: ["completed"],
+};
 
 function isActiveTerm(term: CanvasTerm, now: Date): boolean {
   if (term.start_at !== null && new Date(term.start_at) > now) return false;
@@ -56,22 +69,30 @@ export class CanvasSourceClient implements ISourceClient {
   async getCourses(): Promise<DiscoveredCourse[]> {
     const useExplicitTerms = this.syncConfig.allowedTermIdSet.size > 0;
 
+    // Translate the engine's course-state vocabulary to Canvas's state[] enum.
+    // Critically, "unpublished" -> created/claimed; sending "unpublished" verbatim
+    // matches zero courses, so unpublished courses would never be discovered.
+    const canvasStates = [
+      ...new Set(this.syncConfig.allowedCourseStates.flatMap((s) => CANVAS_STATE_MAP[s])),
+    ];
+
     logger.info("Canvas: fetching courses", {
       accountId: this.client.accountId,
       allowedCourseStates: this.syncConfig.allowedCourseStates,
+      canvasStates,
       allowedTermIds: [...this.syncConfig.allowedTermIdSet],
       excludedCanvasCourseIds: [...this.syncConfig.excludedCourseIdSet],
     });
 
     const [canvasCourses, terms] = await Promise.all([
-      // available = published, unpublished = draft. Both are syncable by default:
-      // teachers prepping next semester want their files remediated before publish.
-      // `completed` (past terms) and `deleted` are excluded. Per-institution overrides
-      // come through syncConfig.allowedCourseStates. No enrollment_type filter — the
+      // available = published; created/claimed = unpublished/draft. Both are syncable by
+      // default: teachers prepping next semester want files remediated before publish.
+      // `completed` (past terms) and `deleted` are excluded. Per-institution overrides come
+      // through syncConfig.allowedCourseStates. No enrollment_type filter — the
       // account-courses endpoint should return every course in scope.
       this.client.getPaginated<CanvasCourse>(
         `/accounts/${this.client.accountId}/courses`,
-        { state: this.syncConfig.allowedCourseStates },
+        { state: canvasStates },
       ),
       this.client.getTerms(),
     ]);
