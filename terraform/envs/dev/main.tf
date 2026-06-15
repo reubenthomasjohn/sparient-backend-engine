@@ -126,7 +126,7 @@ data "aws_iam_policy_document" "lambda_runtime" {
     ]
   }
   statement {
-    actions   = ["s3:CreateBucket", "s3:PutBucketNotificationConfiguration", "s3:PutBucketPublicAccessBlock"]
+    actions   = ["s3:CreateBucket", "s3:PutBucketNotification", "s3:PutBucketPublicAccessBlock"]
     resources = ["arn:aws:s3:::sparient-*"]
   }
 
