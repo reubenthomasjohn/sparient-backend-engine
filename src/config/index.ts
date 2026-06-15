@@ -34,6 +34,12 @@ const configSchema = z.object({
     // so dev and prod never collide on a shared slug in the same account).
     institutionBucketPrefix: z.string().default("sparient"),
   }),
+  // KMS key for encrypting institution Canvas tokens at rest. Set per-env in Terraform.
+  // Unset locally is fine: decryptToken passes through legacy plaintext, and encryptToken
+  // throws (so writes that must encrypt fail loudly rather than silently store plaintext).
+  credentials: z.object({
+    kmsKeyId: z.string().optional(),
+  }),
   // If queue URLs are set, SqsQueue is used; otherwise InMemoryQueue runs in-process.
   // Local dev can leave these unset — the consumers are started by server.ts.
   queue: z.object({
@@ -64,6 +70,9 @@ const parsed = configSchema.safeParse({
   },
   storage: {
     institutionBucketPrefix: process.env.INSTITUTION_BUCKET_PREFIX,
+  },
+  credentials: {
+    kmsKeyId: process.env.CREDENTIALS_KMS_KEY_ID,
   },
   queue: {
     discoveryUrl: process.env.SQS_DISCOVERY_URL,

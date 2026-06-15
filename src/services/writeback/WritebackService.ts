@@ -80,7 +80,7 @@ export class WritebackService {
       return;
     }
 
-    const sourceClient = SourceRegistry.getClient(institution);
+    const sourceClient = await SourceRegistry.getClient(institution);
 
     // The bytes are PDFs by contract — Connectivo's output format. Use that MIME
     // explicitly rather than the source's mimeType, which may have been docx/pptx.

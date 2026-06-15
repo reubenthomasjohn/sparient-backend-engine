@@ -33,7 +33,7 @@ export async function discoverCourses(input: DiscoverCoursesInput): Promise<Disc
   const institution = await prisma.institution.findUniqueOrThrow({
     where: { id: input.institutionId },
   });
-  const sourceClient = SourceRegistry.getClient(institution);
+  const sourceClient = await SourceRegistry.getClient(institution);
 
   // Single-course sync fetches the course directly (bypassing the account listing and its
   // term/state filters) so an explicit request always resolves — even for a course in a
@@ -130,7 +130,7 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
   const institution = await prisma.institution.findUniqueOrThrow({
     where: { id: input.institutionId },
   });
-  const sourceClient = SourceRegistry.getClient(institution);
+  const sourceClient = await SourceRegistry.getClient(institution);
 
   const course = await prisma.course.findUniqueOrThrow({
     where: { id: input.courseId },

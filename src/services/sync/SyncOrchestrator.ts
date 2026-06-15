@@ -108,7 +108,7 @@ export class SyncOrchestrator {
       }
     }
 
-    const sourceClient = SourceRegistry.getClient(institution);
+    const sourceClient = await SourceRegistry.getClient(institution);
     const fresh = await sourceClient.getFile(canvasCourseId, canvasFileId);
     if (!fresh) throw Errors.notFound('File in Canvas');
 
