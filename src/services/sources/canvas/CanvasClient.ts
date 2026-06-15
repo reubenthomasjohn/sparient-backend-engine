@@ -43,6 +43,36 @@ export function serializeCanvasParams(params: Record<string, unknown>): string {
   return parts.toString();
 }
 
+const REDACTED = '[REDACTED]';
+
+// Redact the Bearer token from an AxiosError before it propagates. A thrown
+// AxiosError is serialized — including config.headers — by our logger AND by the
+// Lambda runtime on an uncaught throw, which would otherwise print the Canvas API
+// token in plaintext to CloudWatch. We mutate in place and re-reject the SAME error
+// so axios.isAxiosError() and err.response.status checks downstream still work.
+// config.headers on a request is a per-request merge, so this never touches the
+// client's default token used by subsequent requests.
+export function redactCanvasAuthError(err: unknown): unknown {
+  const e = err as { config?: { headers?: unknown }; response?: { config?: { headers?: unknown } } };
+  for (const headers of [e?.config?.headers, e?.response?.config?.headers]) {
+    if (!headers || typeof headers !== 'object') continue;
+    const h = headers as Record<string, unknown> & {
+      get?: (k: string) => unknown;
+      set?: (k: string, v: string) => void;
+    };
+    if (typeof h.get === 'function' && typeof h.set === 'function') {
+      // AxiosHeaders instance.
+      if (h.get('Authorization') != null) h.set('Authorization', REDACTED);
+      if (h.get('authorization') != null) h.set('authorization', REDACTED);
+    } else {
+      for (const key of Object.keys(h)) {
+        if (key.toLowerCase() === 'authorization') h[key] = REDACTED;
+      }
+    }
+  }
+  return err;
+}
+
 interface CanvasCredentials {
   domain: string;
   account_id: string;
@@ -86,6 +116,13 @@ export class CanvasClient {
       // Bracketed-array serialization for Canvas/Rails — see serializeCanvasParams.
       paramsSerializer: serializeCanvasParams,
     });
+
+    // Scrub the Bearer token from any error before it propagates, so an uncaught
+    // throw (logged by our logger or the Lambda runtime) never prints it in plaintext.
+    this.http.interceptors.response.use(
+      (response) => response,
+      (error) => Promise.reject(redactCanvasAuthError(error)),
+    );
   }
 
   // Fetches all pages of a paginated Canvas endpoint.
