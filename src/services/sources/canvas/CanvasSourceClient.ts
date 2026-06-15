@@ -3,7 +3,7 @@ import { Readable } from "stream";
 import { Institution } from "@prisma/client";
 import { CanvasClient } from "./CanvasClient";
 import { CanvasFileReplacer } from "./CanvasFileReplacer";
-import { toDiscoveredFile } from "./mappers";
+import { toDiscoveredCourse, toDiscoveredFile } from "./mappers";
 import { ISourceClient } from "../ISourceClient";
 import {
   DiscoveredCourse,
@@ -16,7 +16,20 @@ import {
 } from "../../../types/source";
 import { CanvasCourse, CanvasFile, CanvasTerm } from "../../../types/canvas";
 import { logger } from "../../../utils/logger";
-import { EffectiveSyncConfig, getEffectiveSyncConfig } from "../../sync/syncConfig";
+import {
+  CourseState,
+  EffectiveSyncConfig,
+  getEffectiveSyncConfig,
+} from "../../sync/syncConfig";
+
+// The engine's course-state vocabulary -> Canvas's state[] enum on
+// /accounts/:id/courses. Canvas has NO "unpublished" state value (sending it
+// matches zero courses); pre-publish courses live in the created/claimed states.
+const CANVAS_STATE_MAP: Record<CourseState, string[]> = {
+  available: ["available"],
+  unpublished: ["created", "claimed"],
+  completed: ["completed"],
+};
 
 function isActiveTerm(term: CanvasTerm, now: Date): boolean {
   if (term.start_at !== null && new Date(term.start_at) > now) return false;
@@ -54,31 +67,46 @@ export class CanvasSourceClient implements ISourceClient {
   }
 
   async getCourses(): Promise<DiscoveredCourse[]> {
+    const useExplicitTerms = this.syncConfig.allowedTermIdSet.size > 0;
+
+    // Translate the engine's course-state vocabulary to Canvas's state[] enum.
+    // Critically, "unpublished" -> created/claimed; sending "unpublished" verbatim
+    // matches zero courses, so unpublished courses would never be discovered.
+    const canvasStates = [
+      ...new Set(this.syncConfig.allowedCourseStates.flatMap((s) => CANVAS_STATE_MAP[s])),
+    ];
+
     logger.info("Canvas: fetching courses", {
       accountId: this.client.accountId,
       allowedCourseStates: this.syncConfig.allowedCourseStates,
+      canvasStates,
+      allowedTermIds: [...this.syncConfig.allowedTermIdSet],
       excludedCanvasCourseIds: [...this.syncConfig.excludedCourseIdSet],
     });
 
     const [canvasCourses, terms] = await Promise.all([
-      // available = published, unpublished = draft. Both are syncable by default:
-      // teachers prepping next semester want their files remediated before publish.
-      // `completed` (past terms) and `deleted` are excluded. Per-institution overrides
-      // come through syncConfig.allowedCourseStates.
+      // available = published; created/claimed = unpublished/draft. Both are syncable by
+      // default: teachers prepping next semester want files remediated before publish.
+      // `completed` (past terms) and `deleted` are excluded. Per-institution overrides come
+      // through syncConfig.allowedCourseStates. No enrollment_type filter — the
+      // account-courses endpoint should return every course in scope.
       this.client.getPaginated<CanvasCourse>(
         `/accounts/${this.client.accountId}/courses`,
-        { state: this.syncConfig.allowedCourseStates, enrollment_type: "teacher" },
+        { state: canvasStates },
       ),
       this.client.getTerms(),
     ]);
 
+    // Term restriction. When syncConfig.allowedTermIds is set, sync EXACTLY those terms
+    // (even concluded ones) — explicit operator intent overrides the active-term heuristic.
+    // When empty (default), fall back to "all currently-active terms" (start/end straddle now).
     const now = new Date();
-    const activeTermIds = new Set(
-      terms.filter((t) => isActiveTerm(t, now)).map((t) => t.id),
-    );
+    const includedTermIds = useExplicitTerms
+      ? this.syncConfig.allowedTermIdSet
+      : new Set(terms.filter((t) => isActiveTerm(t, now)).map((t) => t.id.toString()));
 
     const activeCourses = canvasCourses.filter((c) =>
-      activeTermIds.has(c.enrollment_term_id),
+      includedTermIds.has(c.enrollment_term_id?.toString()),
     );
 
     // Per-institution exclude list — applied after the term filter so the
@@ -94,7 +122,8 @@ export class CanvasSourceClient implements ISourceClient {
 
     logger.info("Canvas: courses fetched", {
       total: canvasCourses.length,
-      activeTerms: activeTermIds.size,
+      termMode: useExplicitTerms ? "explicit" : "active",
+      includedTerms: includedTermIds.size,
       afterTermFilter: activeCourses.length,
       droppedByTermFilter: canvasCourses.length - activeCourses.length,
       afterExcludeFilter: includedCourses.length,
@@ -107,12 +136,16 @@ export class CanvasSourceClient implements ISourceClient {
       });
     }
 
-    return includedCourses.map((c) => ({
-      externalId: c.id.toString(),
-      name: c.name,
-      courseCode: c.course_code ?? null,
-      termId: c.enrollment_term_id ? c.enrollment_term_id.toString() : null,
-    }));
+    return includedCourses.map(toDiscoveredCourse);
+  }
+
+  // Fetch ONE course directly by its Canvas id, bypassing the account listing and its
+  // term/state/exclude filters. Used by single-course sync (singleCourseId) so an explicit
+  // request always resolves the course even if it wouldn't appear in the account listing
+  // (e.g. a concluded term, or a course under a sub-account). Returns null if Canvas 404s.
+  async getCourse(courseExternalId: string): Promise<DiscoveredCourse | null> {
+    const course = await this.client.getCourse(courseExternalId);
+    return course ? toDiscoveredCourse(course) : null;
   }
 
   async getFiles(

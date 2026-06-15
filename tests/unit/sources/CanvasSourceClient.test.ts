@@ -142,17 +142,55 @@ describe('CanvasSourceClient.getCourses — term filter', () => {
     expect(result).toHaveLength(1);
   });
 
-  it('requests both "available" and "unpublished" course states (excludes completed/deleted)', async () => {
-    // Locks in product decision: unpublished courses are synced (teachers can
-    // prep next semester's accessibility before publish); completed/deleted
-    // courses are not (past terms have no remediation value).
+  it('maps course states to Canvas state[] values (unpublished -> created/claimed), no enrollment_type', async () => {
+    // Canvas has no "unpublished" state value — sending it matches zero courses.
+    // The default allowlist (available + unpublished) must reach Canvas as
+    // available + created + claimed. enrollment_type was also removed (undocumented
+    // on this endpoint, dropped courses for some tokens).
     await runWith({ terms: [], courses: [] });
-    expect(mockedClient.getPaginated).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        state: ['available', 'unpublished'],
-        enrollment_type: 'teacher',
-      }),
+    const [, params] = mockedClient.getPaginated.mock.calls[0];
+    expect(params).toEqual({ state: ['available', 'created', 'claimed'] });
+    expect(params).not.toHaveProperty('enrollment_type');
+  });
+});
+
+describe('CanvasSourceClient.getCourses — allowedTermIds override', () => {
+  it('syncs ONLY the configured terms (bypassing the active-term check), incl. concluded', async () => {
+    const PAST = new Date('2020-01-01T00:00:00Z');
+    mockedClient.getPaginated.mockResolvedValue([
+      course(7), // configured term
+      course(8), // not configured
+    ]);
+    // Term 7 is concluded (would be dropped by the active-term filter) but is allow-listed.
+    mockedClient.getTerms.mockResolvedValue([
+      term({ id: 7, start_at: PAST.toISOString(), end_at: PAST.toISOString() }),
+      term({ id: 8, start_at: null, end_at: null }),
+    ]);
+    const client = new CanvasSourceClient(
+      makeInstitution({ syncConfig: { allowedTermIds: ['7'] } }),
     );
+    const result = await client.getCourses();
+    expect(result.map((c) => c.termId)).toEqual(['7']);
+  });
+});
+
+describe('CanvasSourceClient.getCourse — direct single-course fetch', () => {
+  it('returns the mapped course (no listing/term filters applied)', async () => {
+    mockedClient.getCourse.mockResolvedValue(course(99, { id: 2022437, name: 'Direct' }));
+    const client = new CanvasSourceClient(makeInstitution());
+    const result = await client.getCourse('2022437');
+    expect(result).toEqual({
+      externalId: '2022437',
+      name: 'Direct',
+      courseCode: 'C-99',
+      termId: '99',
+    });
+    expect(mockedClient.getCourse).toHaveBeenCalledWith('2022437');
+  });
+
+  it('returns null when Canvas has no such course', async () => {
+    mockedClient.getCourse.mockResolvedValue(null);
+    const client = new CanvasSourceClient(makeInstitution());
+    expect(await client.getCourse('nope')).toBeNull();
   });
 });
