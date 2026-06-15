@@ -11,6 +11,12 @@ import {
 
 export interface ISourceClient {
   getCourses(): Promise<DiscoveredCourse[]>;
+
+  // Fetch a single course directly by its external id, bypassing the account listing
+  // and its term/state filters. Used by single-course sync so an explicit request
+  // resolves the course even when it wouldn't appear in the listing. Null if not found.
+  getCourse(courseExternalId: string): Promise<DiscoveredCourse | null>;
+
   getFiles(courseExternalId: string, lastSyncedAt: Date | null): Promise<DiscoveredFile[]>;
 
   // Refresh a single file's metadata + download URL right before uploading.

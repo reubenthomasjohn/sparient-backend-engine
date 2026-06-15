@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import JSONBig from 'json-bigint';
-import { CanvasFile, CanvasFolder, CanvasTerm } from '../../../types/canvas';
+import { CanvasCourse, CanvasFile, CanvasFolder, CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
 
 // Canvas Enterprise tenants assign integer IDs exceeding Number.MAX_SAFE_INTEGER
@@ -22,6 +22,25 @@ function bigIntSafeJsonParse(data: unknown): unknown {
     // Non-JSON responses (HTML error pages, etc.) shouldn't crash the parser.
     return data;
   }
+}
+
+// Canvas (Rails) expects repeated bracketed keys for array params:
+//   state[]=available&state[]=claimed
+// Without the `[]`, Rails collapses repeated keys to the LAST value (so
+// `state=available&state=unpublished` becomes a scalar `unpublished`), silently
+// returning the wrong/zero results. Callers may pass the key already bracketed
+// (e.g. "content_types[]"); don't double-bracket those.
+export function serializeCanvasParams(params: Record<string, unknown>): string {
+  const parts = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      const arrayKey = key.endsWith('[]') ? key : `${key}[]`;
+      value.forEach((v) => parts.append(arrayKey, String(v)));
+    } else if (value !== undefined && value !== null) {
+      parts.append(key, String(value));
+    }
+  }
+  return parts.toString();
 }
 
 interface CanvasCredentials {
@@ -64,19 +83,8 @@ export class CanvasClient {
       timeout: 30_000,
       // BigInt-safe response parsing — see bigIntSafeJsonParse helper above.
       transformResponse: [bigIntSafeJsonParse],
-      // Canvas expects repeated keys for arrays: content_types[]=a&content_types[]=b
-      // axios's default serialises as content_types[0]=a which Canvas ignores
-      paramsSerializer: (params: Record<string, unknown>) => {
-        const parts = new URLSearchParams();
-        for (const [key, value] of Object.entries(params)) {
-          if (Array.isArray(value)) {
-            value.forEach((v) => parts.append(key, String(v)));
-          } else if (value !== undefined && value !== null) {
-            parts.append(key, String(value));
-          }
-        }
-        return parts.toString();
-      },
+      // Bracketed-array serialization for Canvas/Rails — see serializeCanvasParams.
+      paramsSerializer: serializeCanvasParams,
     });
   }
 
@@ -110,6 +118,19 @@ export class CanvasClient {
   async getFile(fileExternalId: string): Promise<CanvasFile> {
     const response = await this.http.get<CanvasFile>(`/files/${fileExternalId}`);
     return response.data;
+  }
+
+  // Fetch a single course directly by id. Returns null on 404 (course missing or not
+  // visible to this token) so callers can treat "not found" as an empty result rather
+  // than an error. Used by single-course discovery to bypass the account listing.
+  async getCourse(courseExternalId: string): Promise<CanvasCourse | null> {
+    try {
+      const response = await this.http.get<CanvasCourse>(`/courses/${courseExternalId}`);
+      return response.data;
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+      throw err;
+    }
   }
 
   // Fetches all enrollment terms for the account.

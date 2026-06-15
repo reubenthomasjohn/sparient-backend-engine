@@ -1,5 +1,14 @@
-import { CanvasFile } from '../../../types/canvas';
-import { DiscoveredFile } from '../../../types/source';
+import { CanvasCourse, CanvasFile } from '../../../types/canvas';
+import { DiscoveredCourse, DiscoveredFile } from '../../../types/source';
+
+export function toDiscoveredCourse(c: CanvasCourse): DiscoveredCourse {
+  return {
+    externalId: c.id.toString(),
+    name: c.name,
+    courseCode: c.course_code ?? null,
+    termId: c.enrollment_term_id != null ? c.enrollment_term_id.toString() : null,
+  };
+}
 
 export function toDiscoveredFile(f: CanvasFile): DiscoveredFile {
   // f.size arrives as a string (json-bigint storeAsString). Coerce to number
