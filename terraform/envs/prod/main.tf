@@ -187,6 +187,9 @@ locals {
     SQS_WRITEBACK_URL                   = module.queues.writeback_queue_url
     SQS_RESPONSES_QUEUE_ARN             = aws_sqs_queue.responses.arn
     QUEUE_START_CONSUMERS               = "false"
+    # Per-institution bucket prefix: <prefix>-<slug>. Includes the stage so prod and
+    # dev never collide on a shared slug in this shared account. Must start "sparient-".
+    INSTITUTION_BUCKET_PREFIX           = "${var.name_prefix}-accesshub"
   }
 
   lambda_vpc_subnets = module.networking.private_subnet_ids
