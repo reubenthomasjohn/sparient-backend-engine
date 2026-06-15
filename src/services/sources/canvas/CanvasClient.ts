@@ -24,6 +24,25 @@ function bigIntSafeJsonParse(data: unknown): unknown {
   }
 }
 
+// Canvas (Rails) expects repeated bracketed keys for array params:
+//   state[]=available&state[]=claimed
+// Without the `[]`, Rails collapses repeated keys to the LAST value (so
+// `state=available&state=unpublished` becomes a scalar `unpublished`), silently
+// returning the wrong/zero results. Callers may pass the key already bracketed
+// (e.g. "content_types[]"); don't double-bracket those.
+export function serializeCanvasParams(params: Record<string, unknown>): string {
+  const parts = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      const arrayKey = key.endsWith('[]') ? key : `${key}[]`;
+      value.forEach((v) => parts.append(arrayKey, String(v)));
+    } else if (value !== undefined && value !== null) {
+      parts.append(key, String(value));
+    }
+  }
+  return parts.toString();
+}
+
 interface CanvasCredentials {
   domain: string;
   account_id: string;
@@ -64,19 +83,8 @@ export class CanvasClient {
       timeout: 30_000,
       // BigInt-safe response parsing — see bigIntSafeJsonParse helper above.
       transformResponse: [bigIntSafeJsonParse],
-      // Canvas expects repeated keys for arrays: content_types[]=a&content_types[]=b
-      // axios's default serialises as content_types[0]=a which Canvas ignores
-      paramsSerializer: (params: Record<string, unknown>) => {
-        const parts = new URLSearchParams();
-        for (const [key, value] of Object.entries(params)) {
-          if (Array.isArray(value)) {
-            value.forEach((v) => parts.append(key, String(v)));
-          } else if (value !== undefined && value !== null) {
-            parts.append(key, String(value));
-          }
-        }
-        return parts.toString();
-      },
+      // Bracketed-array serialization for Canvas/Rails — see serializeCanvasParams.
+      paramsSerializer: serializeCanvasParams,
     });
   }
 
