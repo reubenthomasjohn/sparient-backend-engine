@@ -1,5 +1,29 @@
 # TODO
 
+## TOP PRIORITY — Authenticate the API (no auth exists today)
+
+There is currently **no auth on any `/api/v1/*` route** — every endpoint is open through
+the public API Gateway. This became urgent with `POST /api/v1/institutions`, which stores
+Canvas API tokens and creates AWS resources while unauthenticated. Treat this as a blocker
+for prod being internet-reachable.
+
+- [ ] Add auth middleware (shared-secret / API key header at minimum, e.g. `x-api-key`
+      checked against a secret from SSM/Secrets Manager), applied to all `/api/v1/*` routes.
+- [ ] Decide whether registration/admin routes need a stronger tier than read/sync routes.
+- [ ] Until then, do not advertise the prod API endpoint or onboard real institutions over
+      the open endpoint.
+
+## Institution registration endpoint — follow-ups
+
+`POST /api/v1/institutions` exists (canvas-only, provisions the `sparient-<id>` bucket +
+responses notification). Remaining:
+
+- [ ] **Auth** (see top priority above) before any real use.
+- [ ] SharePoint support: currently `sourceType` is a `canvas` literal; add a discriminated
+      credentials schema when sharepoint onboarding is needed.
+- [ ] Optional: validate Canvas credentials with a live API probe at registration time so a
+      bad token fails fast instead of at first sync.
+
 ## Prod: re-enable API provisioned concurrency after Lambda quota increase
 
 The us-west-2 Lambda concurrent-executions quota is the new-account floor (10), which (a)

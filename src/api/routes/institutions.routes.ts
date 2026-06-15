@@ -5,8 +5,124 @@ import prisma from '../../db/client';
 import { Errors } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { syncConfigSchema, syncConfigPatchSchema } from '../../services/sync/syncConfig';
+import { provisionInstitutionBucket } from '../../services/storage/InstitutionBucketService';
 
 const router = Router();
+
+// Body schema for POST /institutions. Canvas-only for now — sourceType is a
+// literal rather than the full SourceType enum so a sharepoint payload 400s with
+// a clear message instead of creating an un-syncable row. credentials shape
+// matches what CanvasSourceClient reads (domain without scheme, account_id, api_token).
+const createInstitutionSchema = z.object({
+  name: z.string().min(1).max(255),
+  slug: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9-]+$/, 'slug must be lowercase alphanumeric/hyphens'),
+  sourceType: z.literal('canvas'),
+  credentials: z.object({
+    domain: z.string().min(1),
+    account_id: z.string().min(1),
+    api_token: z.string().min(1),
+  }),
+  // Optional knobs — same editable fields as PATCH; omit to take schema defaults.
+  writebackOptIn: z.boolean().optional(),
+  syncEnabled: z.boolean().optional(),
+  syncTime: z.string().regex(/^\d{2}:\d{2}$/, 'syncTime must be HH:MM').optional(),
+  syncConfig: syncConfigSchema.optional(),
+});
+
+// Columns returned to callers. Deliberately excludes `credentials` (Canvas API
+// token) — see the same rule on the PATCH/update select below.
+const PUBLIC_INSTITUTION_SELECT = {
+  id: true,
+  name: true,
+  slug: true,
+  sourceType: true,
+  writebackOptIn: true,
+  s3Bucket: true,
+  syncEnabled: true,
+  syncTime: true,
+  syncConfig: true,
+  lastSyncedAt: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+// POST /institutions
+// Register a new institution and provision its S3 bucket (sparient-<id>, in the
+// Lambda's region) wired to the responses queue — after this the tick scheduler
+// can sync it with no further setup.
+//
+// NOTE: unauthenticated for now. Auth is the top priority follow-up (docs/TODO.md)
+// — this endpoint stores credentials and creates AWS resources and MUST NOT ship
+// to a publicly-reachable prod long-term.
+//
+// Two-phase (DB row, then AWS): not a single transaction. If provisioning fails
+// we delete the just-created row so a retry starts clean and no half-onboarded
+// institution lingers. provisionInstitutionBucket is idempotent, so a retry after
+// a partial failure (bucket made, notification not) still succeeds.
+router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = createInstitutionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw Errors.badRequest(
+        parsed.error.issues
+          .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+          .join('; '),
+      );
+    }
+    const data = parsed.data;
+
+    let institution;
+    try {
+      institution = await prisma.institution.create({
+        data: {
+          name: data.name,
+          slug: data.slug,
+          sourceType: data.sourceType,
+          credentials: data.credentials,
+          ...(data.writebackOptIn !== undefined && { writebackOptIn: data.writebackOptIn }),
+          ...(data.syncEnabled !== undefined && { syncEnabled: data.syncEnabled }),
+          ...(data.syncTime !== undefined && { syncTime: data.syncTime }),
+          ...(data.syncConfig !== undefined && { syncConfig: data.syncConfig }),
+        },
+        select: PUBLIC_INSTITUTION_SELECT,
+      });
+    } catch (err) {
+      // Unique-constraint on slug → 409 instead of a generic 500.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw Errors.conflict(`Institution with slug '${data.slug}' already exists`);
+      }
+      throw err;
+    }
+
+    // Provision the bucket + response notification. On failure, roll back the row.
+    try {
+      const bucketName = await provisionInstitutionBucket(institution.id);
+      logger.info('Institution registered', { institutionId: institution.id, bucketName });
+    } catch (err) {
+      await prisma.institution
+        .delete({ where: { id: institution.id } })
+        .catch((delErr) =>
+          logger.error('Failed to roll back institution after provisioning error', {
+            institutionId: institution!.id,
+            error: delErr instanceof Error ? delErr.message : String(delErr),
+          }),
+        );
+      logger.error('Institution bucket provisioning failed; rolled back row', {
+        institutionId: institution.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw Errors.badGateway('Failed to provision institution storage; please retry');
+    }
+
+    res.status(201).json({ success: true, data: institution });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // Body schema for PATCH /institutions/:id. Every top-level field optional —
 // only provided columns are written. For syncConfig:
