@@ -142,6 +142,13 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
     input.force ? null : course.lastSyncedAt,
   );
 
+  // Refresh the unfiltered total file count for the course (all types/sizes/locked/hidden).
+  const totalFileCount = await sourceClient.countCourseFiles(input.canvasCourseId);
+  await prisma.course.update({
+    where: { id: input.courseId },
+    data: { totalFileCount },
+  });
+
   // Pass the institution's current MIME allowlist to the detector so rows
   // whose type is no longer in scope (institution narrowed allowedFileTypes)
   // aren't marked deleted by accident.

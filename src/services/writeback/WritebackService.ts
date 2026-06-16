@@ -2,6 +2,12 @@ import prisma from '../../db/client';
 import { SourceRegistry } from '../sources/SourceRegistry';
 import { logger } from '../../utils/logger';
 
+// Lease window for the in_progress claim. Must be longer than the worst-case worker
+// runtime (Lambda timeout 150s) and shorter than the queue visibility timeout (900s),
+// so a duplicate delivered while a worker is live is blocked, but a row stranded
+// in_progress by a crashed/timed-out worker is reclaimable on the next redrive.
+const WRITEBACK_LEASE_MS = 600_000; // 10 min
+
 // Pushes a remediated PDF back into the source system (Canvas) for a single
 // batch_file. Eligibility is re-checked at the worker so an enqueued job that
 // has been superseded by a newer remediation cycle becomes a no-op.
@@ -80,6 +86,28 @@ export class WritebackService {
       return;
     }
 
+    // Lease-claim the source_file as in_progress before pushing to Canvas. A concurrent or
+    // duplicate SQS delivery finds it already in_progress (fresh lease) and skips, avoiding a
+    // double push. A lease older than WRITEBACK_LEASE_MS — left by a crashed/timed-out worker —
+    // is reclaimable so a redrive can still retry. Scoped to the exact version via batchedModifiedAt.
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - WRITEBACK_LEASE_MS);
+    const claim = await prisma.sourceFile.updateMany({
+      where: {
+        id: sourceFile.id,
+        batchedModifiedAt: batchFile.sourceModifiedAt,
+        OR: [{ writebackState: { not: 'in_progress' } }, { writebackStartedAt: { lt: staleBefore } }],
+      },
+      data: { writebackState: 'in_progress', writebackStartedAt: now },
+    });
+    if (claim.count === 0) {
+      logger.info('Writeback: another worker holds the in-progress lease, skipping', {
+        batchFileId,
+        sourceFileId: sourceFile.id,
+      });
+      return;
+    }
+
     const sourceClient = await SourceRegistry.getClient(institution);
 
     // The bytes are PDFs by contract — Connectivo's output format. Use that MIME
@@ -109,6 +137,7 @@ export class WritebackService {
             { writebackState: null },
             { writebackState: 'failed' },
             { writebackState: 'queued' },
+            { writebackState: 'in_progress' },
           ],
         },
         data: { writebackState: 'skipped_stale' },

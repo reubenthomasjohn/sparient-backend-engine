@@ -1,7 +1,28 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
 import JSONBig from 'json-bigint';
 import { CanvasCourse, CanvasFile, CanvasFolder, CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
+
+// Bounded retry for transient Canvas errors. 429 (rate limit) is retried for ANY method
+// since the request wasn't processed; 5xx / network / timeout are retried only for
+// idempotent reads (retrying a POST could double-submit). Honors Retry-After, otherwise
+// exponential backoff — capped so total retry time stays within the worker's timeout.
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1_000;
+const MAX_DELAY_MS = 20_000;
+const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options']);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(error: AxiosError, attempt: number): number {
+  const retryAfter = Number(error.response?.headers?.['retry-after']);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, MAX_DELAY_MS);
+  }
+  return Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
+}
 
 // Canvas Enterprise tenants assign integer IDs exceeding Number.MAX_SAFE_INTEGER
 // (18+ digits). The default JSON.parse silently rounds the trailing digits,
@@ -117,11 +138,35 @@ export class CanvasClient {
       paramsSerializer: serializeCanvasParams,
     });
 
-    // Scrub the Bearer token from any error before it propagates, so an uncaught
-    // throw (logged by our logger or the Lambda runtime) never prints it in plaintext.
+    // Retry transient failures (429 / 5xx / network), then scrub the Bearer token from
+    // whatever error finally propagates — an uncaught throw is otherwise logged with the
+    // Authorization header in plaintext by our logger and the Lambda runtime.
     this.http.interceptors.response.use(
       (response) => response,
-      (error) => Promise.reject(redactCanvasAuthError(error)),
+      async (error: AxiosError) => {
+        const config = error.config as (InternalAxiosRequestConfig & { _retryCount?: number }) | undefined;
+        const status = error.response?.status;
+        const method = (config?.method ?? 'get').toLowerCase();
+        const is5xxOrNetwork = (typeof status === 'number' && status >= 500) || !error.response;
+        const transient = status === 429 || (is5xxOrNetwork && IDEMPOTENT_METHODS.has(method));
+
+        if (config && transient) {
+          config._retryCount = (config._retryCount ?? 0) + 1;
+          if (config._retryCount <= MAX_RETRIES) {
+            const delay = retryDelayMs(error, config._retryCount);
+            logger.warn('Canvas: retrying after transient error', {
+              method,
+              url: config.url,
+              status: status ?? error.code,
+              attempt: config._retryCount,
+              delayMs: delay,
+            });
+            await sleep(delay);
+            return this.http(config);
+          }
+        }
+        return Promise.reject(redactCanvasAuthError(error));
+      },
     );
   }
 
