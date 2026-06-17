@@ -142,13 +142,6 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
     input.force ? null : course.lastSyncedAt,
   );
 
-  // Refresh the unfiltered total file count for the course (all types/sizes/locked/hidden).
-  const totalFileCount = await sourceClient.countCourseFiles(input.canvasCourseId);
-  await prisma.course.update({
-    where: { id: input.courseId },
-    data: { totalFileCount },
-  });
-
   // Pass the institution's current MIME allowlist to the detector so rows
   // whose type is no longer in scope (institution narrowed allowedFileTypes)
   // aren't marked deleted by accident.
@@ -156,6 +149,19 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
   const result = await changeDetector.detect(course, discovered, {
     allowedMimeTypes: new Set(effectiveConfig.allowedMimeTypes),
   });
+
+  // Best-effort: refresh the unfiltered total file count (all types/sizes/locked/hidden).
+  // This is a metrics column — a transient Canvas error here must NOT fail discovery and
+  // skip the upload/batch pipeline, so it runs after the core work and swallows errors.
+  try {
+    const totalFileCount = await sourceClient.countCourseFiles(input.canvasCourseId);
+    await prisma.course.update({ where: { id: input.courseId }, data: { totalFileCount } });
+  } catch (err) {
+    logger.warn('DiscoverFiles: total file count refresh failed (non-fatal)', {
+      courseId: input.courseId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   const fileIds = result.toUploadJobs.map((j) => j.sourceFileId);
 

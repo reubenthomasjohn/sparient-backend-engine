@@ -6,10 +6,13 @@ import { logger } from '../../../utils/logger';
 // Bounded retry for transient Canvas errors. 429 (rate limit) is retried for ANY method
 // since the request wasn't processed; 5xx / network / timeout are retried only for
 // idempotent reads (retrying a POST could double-submit). Honors Retry-After, otherwise
-// exponential backoff — capped so total retry time stays within the worker's timeout.
-const MAX_RETRIES = 3;
+// exponential backoff. Kept small so a single call's worst case (2 retries × (≤8s sleep +
+// 30s request timeout)) stays well under the writeback Lambda's 150s budget. Note: a flow
+// making several calls can still accumulate beyond that — callers should not assume the
+// whole operation is bounded by a single request's retry budget.
+const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 1_000;
-const MAX_DELAY_MS = 20_000;
+const MAX_DELAY_MS = 8_000;
 const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options']);
 
 function sleep(ms: number): Promise<void> {
@@ -74,7 +77,15 @@ const REDACTED = '[REDACTED]';
 // config.headers on a request is a per-request merge, so this never touches the
 // client's default token used by subsequent requests.
 export function redactCanvasAuthError(err: unknown): unknown {
-  const e = err as { config?: { headers?: unknown }; response?: { config?: { headers?: unknown } } };
+  const e = err as {
+    config?: { headers?: unknown };
+    response?: { config?: { headers?: unknown } };
+    request?: unknown;
+  };
+  // Node's http.ClientRequest (err.request) keeps the raw request head — including the
+  // Authorization line — in ._header. toJSON() omits it, but a deep error dump would not.
+  // Nothing downstream reads err.request (we branch on err.response.status), so drop it.
+  if (e && typeof e === 'object' && 'request' in e) delete e.request;
   for (const headers of [e?.config?.headers, e?.response?.config?.headers]) {
     if (!headers || typeof headers !== 'object') continue;
     const h = headers as Record<string, unknown> & {

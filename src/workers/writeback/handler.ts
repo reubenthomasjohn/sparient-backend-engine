@@ -4,13 +4,17 @@ import prisma from '../../db/client';
 import { writebackService } from '../../services/writeback/WritebackService';
 import { logger } from '../../utils/logger';
 
+// Status codes that are 4xx but still worth retrying (server-side/transient by spec).
+const RETRYABLE_4XX = new Set([408, 425, 429]); // Request Timeout, Too Early, Too Many Requests
+
 // Permanent errors won't succeed on retry, so we DON'T redrive them — they'd only churn
-// through maxReceiveCount to the DLQ. Canvas client errors (4xx except 429) are permanent.
-// 429 / 5xx / network / timeout and anything unclassifiable are transient (safe to retry).
+// through maxReceiveCount to the DLQ. Canvas client errors (4xx, except the retryable set)
+// are permanent. 5xx / network / timeout / no-response and anything unclassifiable (incl.
+// app-level errors like "file not in a course") are treated as transient — safer to retry.
 export function isPermanentWritebackError(err: unknown): boolean {
   if (axios.isAxiosError(err)) {
     const status = err.response?.status;
-    return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+    return typeof status === 'number' && status >= 400 && status < 500 && !RETRYABLE_4XX.has(status);
   }
   return false;
 }

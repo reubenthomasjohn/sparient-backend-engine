@@ -96,7 +96,14 @@ export class WritebackService {
       where: {
         id: sourceFile.id,
         batchedModifiedAt: batchFile.sourceModifiedAt,
-        OR: [{ writebackState: { not: 'in_progress' } }, { writebackStartedAt: { lt: staleBefore } }],
+        // Claimable when the row is NOT actively leased: any non-in_progress state,
+        // OR null (fresh automatic writeback — Prisma's `not` does NOT match null, so
+        // null must be listed explicitly), OR a stale lease left by a crashed worker.
+        OR: [
+          { writebackState: { not: 'in_progress' } },
+          { writebackState: null },
+          { writebackStartedAt: { lt: staleBefore } },
+        ],
       },
       data: { writebackState: 'in_progress', writebackStartedAt: now },
     });
