@@ -42,6 +42,7 @@ describe('handleWritebackJob', () => {
           { writebackState: null },
           { writebackState: 'failed' },
           { writebackState: 'queued' },
+          { writebackState: 'in_progress' },
         ],
       },
       data: { writebackState: 'failed' },
@@ -55,6 +56,30 @@ describe('handleWritebackJob', () => {
       ignoreOptIn: true,
       sourceFileId: 'sf-1',
     });
+  });
+
+  it('does NOT redrive a permanent error (Canvas 4xx) — stamps failed and swallows', async () => {
+    const permanent = Object.assign(new Error('forbidden'), {
+      isAxiosError: true,
+      response: { status: 403 },
+    });
+    vi.mocked(writebackService.writeBack).mockRejectedValue(permanent);
+    prismaMock.batchFile.findUnique.mockResolvedValue({ sourceFileId: 'sf-1' } as any);
+
+    // Resolves (no throw) so the SQS lambda deletes the message instead of redriving to DLQ.
+    await expect(handleWritebackJob({ batchFileId: 'bf-1' })).resolves.toBeUndefined();
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalled(); // still stamped failed
+  });
+
+  it('DOES redrive a transient error (Canvas 429)', async () => {
+    const transient = Object.assign(new Error('rate limited'), {
+      isAxiosError: true,
+      response: { status: 429 },
+    });
+    vi.mocked(writebackService.writeBack).mockRejectedValue(transient);
+    prismaMock.batchFile.findUnique.mockResolvedValue({ sourceFileId: 'sf-1' } as any);
+
+    await expect(handleWritebackJob({ batchFileId: 'bf-1' })).rejects.toThrow();
   });
 
   it('swallows secondary DB errors during failure recording (still rethrows the original)', async () => {

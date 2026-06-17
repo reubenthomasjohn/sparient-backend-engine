@@ -19,6 +19,10 @@ export interface ISourceClient {
 
   getFiles(courseExternalId: string, lastSyncedAt: Date | null): Promise<DiscoveredFile[]>;
 
+  // Total number of files in the course with NO filters (all types/sizes/locked/hidden).
+  // Used to track course-level coverage; distinct from getFiles, which is filtered.
+  countCourseFiles(courseExternalId: string): Promise<number>;
+
   // Refresh a single file's metadata + download URL right before uploading.
   // Source systems (Canvas) issue pre-signed URLs that expire in ~1h, so the upload
   // worker must refetch rather than rely on a URL captured during discovery.

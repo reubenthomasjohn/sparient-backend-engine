@@ -16,7 +16,10 @@ let sourceClient: DeepMockProxy<ISourceClient>;
 
 beforeEach(() => {
   sourceClient = mockDeep<ISourceClient>();
-  vi.spyOn(SourceRegistry, 'getClient').mockReturnValue(sourceClient);
+  vi.spyOn(SourceRegistry, 'getClient').mockResolvedValue(sourceClient);
+  // Default: the in_progress lease claim succeeds. Tests that exercise the success
+  // count=0 path override the success call with mockResolvedValueOnce sequencing.
+  prismaMock.sourceFile.updateMany.mockResolvedValue({ count: 1 } as any);
 });
 
 // Helper: stitch together the include shape that WritebackService.findUnique expects.
@@ -236,11 +239,22 @@ describe('WritebackService.writeBack', () => {
           { writebackState: null },
           { writebackState: 'failed' },
           { writebackState: 'queued' },
+          { writebackState: 'in_progress' },
         ],
       },
       data: { writebackState: 'skipped_stale' },
     });
     expect(prismaMock.sourceFile.update).not.toHaveBeenCalled();
+  });
+
+  it('skips the push when the in_progress lease is already held (claim count=0)', async () => {
+    prismaMock.batchFile.findUnique.mockResolvedValue(batchFileWithRelations() as any);
+    // The lease claim matches no rows — another worker holds a fresh lease.
+    prismaMock.sourceFile.updateMany.mockResolvedValue({ count: 0 } as any);
+
+    await service.writeBack('bf-1');
+
+    expect(sourceClient.replaceFile).not.toHaveBeenCalled();
   });
 
   it('records written + lastWritebackModifiedAt on success (guarded against stale writers)', async () => {
@@ -296,12 +310,16 @@ describe('WritebackService.writeBack', () => {
         downloadUrl: 'http://x',
       },
     });
-    // Newer batch already claimed source_file between check and update.
-    prismaMock.sourceFile.updateMany.mockResolvedValue({ count: 0 } as any);
+    // Lease claim succeeds (1st updateMany), then the success stamp matches 0 rows
+    // (2nd updateMany) — a newer batch claimed the source_file between check and write.
+    prismaMock.sourceFile.updateMany
+      .mockResolvedValueOnce({ count: 1 } as any)
+      .mockResolvedValueOnce({ count: 0 } as any);
 
     await service.writeBack('bf-1');
 
-    // Method must return cleanly — no throw.
-    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledOnce();
+    // Replace happened; the success stamp no-opped and the method returned cleanly.
+    expect(sourceClient.replaceFile).toHaveBeenCalledOnce();
+    expect(prismaMock.sourceFile.updateMany).toHaveBeenCalledTimes(2);
   });
 });

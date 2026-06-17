@@ -33,7 +33,7 @@ export async function discoverCourses(input: DiscoverCoursesInput): Promise<Disc
   const institution = await prisma.institution.findUniqueOrThrow({
     where: { id: input.institutionId },
   });
-  const sourceClient = SourceRegistry.getClient(institution);
+  const sourceClient = await SourceRegistry.getClient(institution);
 
   // Single-course sync fetches the course directly (bypassing the account listing and its
   // term/state filters) so an explicit request always resolves — even for a course in a
@@ -130,7 +130,7 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
   const institution = await prisma.institution.findUniqueOrThrow({
     where: { id: input.institutionId },
   });
-  const sourceClient = SourceRegistry.getClient(institution);
+  const sourceClient = await SourceRegistry.getClient(institution);
 
   const course = await prisma.course.findUniqueOrThrow({
     where: { id: input.courseId },
@@ -141,6 +141,13 @@ export async function discoverFiles(input: DiscoverFilesInput): Promise<Discover
     input.canvasCourseId,
     input.force ? null : course.lastSyncedAt,
   );
+
+  // Refresh the unfiltered total file count for the course (all types/sizes/locked/hidden).
+  const totalFileCount = await sourceClient.countCourseFiles(input.canvasCourseId);
+  await prisma.course.update({
+    where: { id: input.courseId },
+    data: { totalFileCount },
+  });
 
   // Pass the institution's current MIME allowlist to the detector so rows
   // whose type is no longer in scope (institution narrowed allowedFileTypes)

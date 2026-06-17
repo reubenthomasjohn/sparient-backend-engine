@@ -9,8 +9,20 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: SQSBatchItemFailure[] = [];
 
   for (const record of event.Records) {
+    let job: WritebackJob;
     try {
-      const job = JSON.parse(record.body) as WritebackJob;
+      job = JSON.parse(record.body) as WritebackJob;
+    } catch (err) {
+      // Poison message — it will never parse, so redriving only churns it to the DLQ.
+      // Drop it (don't report a batch-item failure) after logging.
+      logger.error('Writeback Lambda: unparseable message body, dropping', {
+        messageId: record.messageId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+
+    try {
       await handleWritebackJob(job);
     } catch (err) {
       logger.error('Writeback Lambda: record failed', {

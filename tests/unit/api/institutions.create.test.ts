@@ -8,6 +8,11 @@ vi.mock('../../../src/services/storage/InstitutionBucketService', () => ({
   provisionInstitutionBucket: vi.fn(),
 }));
 
+// Mock credential encryption — no real KMS in unit tests.
+vi.mock('../../../src/services/crypto/credentialCrypto', () => ({
+  encryptToken: vi.fn(async (t: string) => `kms:${t}`),
+}));
+
 import app from '../../../src/app';
 import { provisionInstitutionBucket } from '../../../src/services/storage/InstitutionBucketService';
 

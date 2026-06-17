@@ -1,11 +1,23 @@
+import axios from 'axios';
 import { WritebackJob } from '../../queue';
 import prisma from '../../db/client';
 import { writebackService } from '../../services/writeback/WritebackService';
 import { logger } from '../../utils/logger';
 
-// Thin wrapper: WritebackService is the unit-tested seam. The handler exists to
-// translate transport errors into a `failed` writebackState before re-throwing
-// so SQS can redrive — DLQ catches terminal failures.
+// Permanent errors won't succeed on retry, so we DON'T redrive them — they'd only churn
+// through maxReceiveCount to the DLQ. Canvas client errors (4xx except 429) are permanent.
+// 429 / 5xx / network / timeout and anything unclassifiable are transient (safe to retry).
+export function isPermanentWritebackError(err: unknown): boolean {
+  if (axios.isAxiosError(err)) {
+    const status = err.response?.status;
+    return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+  }
+  return false;
+}
+
+// Thin wrapper: WritebackService is the unit-tested seam. The handler translates transport
+// errors into a `failed` writebackState, then re-throws ONLY transient errors so SQS redrives;
+// permanent errors are swallowed (already stamped failed) so they don't churn to the DLQ.
 export async function handleWritebackJob(job: WritebackJob): Promise<void> {
   try {
     await writebackService.writeBack(job.batchFileId, {
@@ -37,6 +49,7 @@ export async function handleWritebackJob(job: WritebackJob): Promise<void> {
               { writebackState: null },
               { writebackState: 'failed' },
               { writebackState: 'queued' },
+              { writebackState: 'in_progress' },
             ],
           },
           data: { writebackState: 'failed' },
@@ -47,6 +60,15 @@ export async function handleWritebackJob(job: WritebackJob): Promise<void> {
         batchFileId: job.batchFileId,
         error: innerErr instanceof Error ? innerErr.message : String(innerErr),
       });
+    }
+
+    // Permanent failures are already recorded; don't redrive them to the DLQ.
+    if (isPermanentWritebackError(err)) {
+      logger.warn('Writeback: permanent failure, not redriving', {
+        batchFileId: job.batchFileId,
+        error: reason,
+      });
+      return;
     }
 
     throw err;
