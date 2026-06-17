@@ -13,6 +13,32 @@ for prod being internet-reachable.
 - [ ] Until then, do not advertise the prod API endpoint or onboard real institutions over
       the open endpoint.
 
+## HIGH — from the 5-agent review of `fix/token-logging-and-replace-review`
+
+Three HIGH-severity findings to clear before this branch reaches an internet-reachable prod.
+
+- [ ] **Auth on the institutions router** (see TOP PRIORITY above). `POST /api/v1/institutions`
+      stores Canvas tokens + provisions AWS; PATCH/DELETE mutate/wipe — all unauthenticated.
+      Tracked as the top-priority item; restated here because the next finding is a direct
+      consequence of the route being open.
+- [ ] **SSRF via the `domain` field** (`src/services/sources/canvas/CanvasClient.ts:139`,
+      validated only as `z.string().min(1)` in `src/api/routes/institutions.routes.ts:33`).
+      The POST body's `domain` is interpolated straight into
+      `baseURL = https://${domain}/api/v1`, so a registered `domain` like
+      `169.254.169.254/latest/meta-data#` or an internal host makes the server issue
+      token-bearing requests there. Fix: validate `domain` at the Zod layer against a strict
+      hostname (e.g. `^[a-z0-9.-]+\.instructure\.com$`, hostname-only, no scheme/port/path).
+- [ ] **Upload step-2 timeout (300s) exceeds the writeback Lambda timeout (150s)**
+      (`src/services/sources/canvas/CanvasClient.ts:310`). A replace that runs past 150s →
+      Lambda killed mid-write → the `source_file` row is stranded `in_progress` with a fresh
+      `writebackStartedAt`. For the next 600s (lease window) the SQS redrive hits
+      `claim.count === 0` and silently returns, and `RemediationService` now refuses to
+      re-enqueue `in_progress` — so if the 3 redrives exhaust before the lease goes stale,
+      the write is dropped until the next batch. Fix: cap the step-2 `timeout` under the
+      Lambda budget (≤120s) **or** raise the writeback Lambda timeout to cover the full
+      replace-chain worst case. (Related MEDIUM: add a stale-`in_progress` sweeper /
+      staleness check to `RemediationService` so a stranded row self-heals.)
+
 ## Institution registration endpoint — follow-ups
 
 `POST /api/v1/institutions` exists (canvas-only, provisions the `sparient-<id>` bucket +

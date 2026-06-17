@@ -208,8 +208,9 @@ locals {
     # Per-institution bucket prefix: <prefix>-<slug>. Includes the stage so prod and
     # dev never collide on a shared slug in this shared account. Must start "sparient-".
     INSTITUTION_BUCKET_PREFIX           = "${var.name_prefix}-accesshub"
-    # KMS key for encrypting institution Canvas tokens at rest.
-    CREDENTIALS_KMS_KEY_ID              = aws_kms_key.credentials.key_id
+    # KMS key for encrypting institution Canvas tokens at rest. Pass the alias (not the raw
+    # key id) so a key rotation/replacement is picked up without a Lambda redeploy.
+    CREDENTIALS_KMS_KEY_ID              = aws_kms_alias.credentials.name
   }
 
   lambda_vpc_subnets = module.networking.private_subnet_ids

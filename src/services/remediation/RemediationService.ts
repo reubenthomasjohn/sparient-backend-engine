@@ -472,7 +472,9 @@ export class RemediationService {
           sf.lastWritebackModifiedAt !== null &&
           sf.lastWritebackModifiedAt.getTime() > bf.sourceModifiedAt.getTime()) ||
         sf.writebackState === 'skipped_stale' ||
-        sf.writebackState === 'queued';
+        sf.writebackState === 'queued' ||
+        // A writeback worker is actively leasing this version — don't re-enqueue.
+        sf.writebackState === 'in_progress';
       return !alreadyHandledForVersion;
     });
 
