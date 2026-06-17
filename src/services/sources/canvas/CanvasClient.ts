@@ -3,13 +3,9 @@ import JSONBig from 'json-bigint';
 import { CanvasCourse, CanvasFile, CanvasFolder, CanvasTerm } from '../../../types/canvas';
 import { logger } from '../../../utils/logger';
 
-// Bounded retry for transient Canvas errors. 429 (rate limit) is retried for ANY method
-// since the request wasn't processed; 5xx / network / timeout are retried only for
-// idempotent reads (retrying a POST could double-submit). Honors Retry-After, otherwise
-// exponential backoff. Kept small so a single call's worst case (2 retries × (≤8s sleep +
-// 30s request timeout)) stays well under the writeback Lambda's 150s budget. Note: a flow
-// making several calls can still accumulate beyond that — callers should not assume the
-// whole operation is bounded by a single request's retry budget.
+// Bounded retry for transient Canvas errors. 429 retried for any method; 5xx/network only
+// for idempotent reads (retrying a POST could double-submit). Honors Retry-After, else
+// exponential backoff. Per-call budget is small, but multi-call flows can still exceed it.
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 8_000;
@@ -27,17 +23,12 @@ function retryDelayMs(error: AxiosError, attempt: number): number {
   return Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
 }
 
-// Canvas Enterprise tenants assign integer IDs exceeding Number.MAX_SAFE_INTEGER
-// (18+ digits). The default JSON.parse silently rounds the trailing digits,
-// breaking every downstream comparison. json-bigint with `storeAsString: true`
-// returns ALL JSON integers as strings, so the CanvasFile/CanvasCourse types
-// can declare id-fields as `string` and stay consistent regardless of size.
+// Canvas Enterprise IDs exceed Number.MAX_SAFE_INTEGER; JSON.parse rounds them and breaks
+// comparisons. json-bigint with storeAsString returns all JSON integers as strings instead.
 const jsonBigParser = JSONBig({ storeAsString: true });
 
-// Used as axios `transformResponse` for any request that may return a Canvas
-// object. Both the shared `this.http` instance AND the bare axios.post in
-// finishUpload need this — the latter goes to Inst-FS (a different host) but
-// the response still contains a Canvas file with potentially huge ids.
+// axios transformResponse for any Canvas-returning request. Also needed by the bare
+// axios.post in finishUpload (Inst-FS host): its response carries huge Canvas ids too.
 function bigIntSafeJsonParse(data: unknown): unknown {
   if (typeof data !== 'string' || data.length === 0) return data;
   try {
@@ -48,12 +39,8 @@ function bigIntSafeJsonParse(data: unknown): unknown {
   }
 }
 
-// Canvas (Rails) expects repeated bracketed keys for array params:
-//   state[]=available&state[]=claimed
-// Without the `[]`, Rails collapses repeated keys to the LAST value (so
-// `state=available&state=unpublished` becomes a scalar `unpublished`), silently
-// returning the wrong/zero results. Callers may pass the key already bracketed
-// (e.g. "content_types[]"); don't double-bracket those.
+// Canvas/Rails needs bracketed keys for arrays (state[]=a&state[]=b); without `[]` it keeps
+// only the last value. Callers may pass a pre-bracketed key, so don't double-bracket.
 export function serializeCanvasParams(params: Record<string, unknown>): string {
   const parts = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -69,22 +56,17 @@ export function serializeCanvasParams(params: Record<string, unknown>): string {
 
 const REDACTED = '[REDACTED]';
 
-// Redact the Bearer token from an AxiosError before it propagates. A thrown
-// AxiosError is serialized — including config.headers — by our logger AND by the
-// Lambda runtime on an uncaught throw, which would otherwise print the Canvas API
-// token in plaintext to CloudWatch. We mutate in place and re-reject the SAME error
-// so axios.isAxiosError() and err.response.status checks downstream still work.
-// config.headers on a request is a per-request merge, so this never touches the
-// client's default token used by subsequent requests.
+// Redact the Bearer token from an AxiosError before it propagates — our logger and the
+// Lambda runtime serialize config.headers and would otherwise leak the token to CloudWatch.
+// Mutated in place so isAxiosError()/status checks still work; headers are a per-request merge.
 export function redactCanvasAuthError(err: unknown): unknown {
   const e = err as {
     config?: { headers?: unknown };
     response?: { config?: { headers?: unknown } };
     request?: unknown;
   };
-  // Node's http.ClientRequest (err.request) keeps the raw request head — including the
-  // Authorization line — in ._header. toJSON() omits it, but a deep error dump would not.
-  // Nothing downstream reads err.request (we branch on err.response.status), so drop it.
+  // err.request (Node http.ClientRequest) holds the raw Authorization line in ._header; a
+  // deep error dump would leak it and nothing downstream reads it, so drop it.
   if (e && typeof e === 'object' && 'request' in e) delete e.request;
   for (const headers of [e?.config?.headers, e?.response?.config?.headers]) {
     if (!headers || typeof headers !== 'object') continue;
@@ -149,9 +131,7 @@ export class CanvasClient {
       paramsSerializer: serializeCanvasParams,
     });
 
-    // Retry transient failures (429 / 5xx / network), then scrub the Bearer token from
-    // whatever error finally propagates — an uncaught throw is otherwise logged with the
-    // Authorization header in plaintext by our logger and the Lambda runtime.
+    // Retry transient failures, then scrub the Bearer token from whatever error propagates.
     this.http.interceptors.response.use(
       (response) => response,
       async (error: AxiosError) => {
@@ -301,12 +281,8 @@ export class CanvasClient {
 
     logger.info('Canvas: upload step 2 (bytes)', { uploadUrl: init.upload_url, bytes: body.byteLength });
 
-    // No bearer here — upload_url lives on Inst-FS, not the Canvas API host.
-    // We MUST apply bigIntSafeJsonParse here too — Inst-FS returns the new
-    // Canvas file object on 201 with the same large-id risk as the main API.
-    // axios's default JSON.parse on this response would mangle Enterprise IDs.
-    // The <CanvasFile> generic types `uploadResponse.data` so the cast at
-    // the 201 branch is type-checked rather than blindly trusting `any`.
+    // No bearer — upload_url is Inst-FS, not the Canvas API host. Still needs
+    // bigIntSafeJsonParse: the 201 response carries a Canvas file with huge ids.
     const uploadResponse = await axios.post<CanvasFile>(init.upload_url, form, {
       maxRedirects: 0,
       // Accept redirects *and* 201s as success; anything else throws.
