@@ -4,20 +4,22 @@ import prisma from '../../db/client';
 import { writebackService } from '../../services/writeback/WritebackService';
 import { logger } from '../../utils/logger';
 
-// Permanent errors won't succeed on retry, so we DON'T redrive them — they'd only churn
-// through maxReceiveCount to the DLQ. Canvas client errors (4xx except 429) are permanent.
-// 429 / 5xx / network / timeout and anything unclassifiable are transient (safe to retry).
+// Status codes that are 4xx but still worth retrying (server-side/transient by spec).
+const RETRYABLE_4XX = new Set([408, 425, 429]); // Request Timeout, Too Early, Too Many Requests
+
+// Permanent errors won't succeed on retry, so we don't redrive them (they'd just churn to
+// the DLQ). 4xx except the retryable set are permanent; everything else (5xx / network /
+// unclassifiable app errors) is treated as transient — safer to retry.
 export function isPermanentWritebackError(err: unknown): boolean {
   if (axios.isAxiosError(err)) {
     const status = err.response?.status;
-    return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+    return typeof status === 'number' && status >= 400 && status < 500 && !RETRYABLE_4XX.has(status);
   }
   return false;
 }
 
-// Thin wrapper: WritebackService is the unit-tested seam. The handler translates transport
-// errors into a `failed` writebackState, then re-throws ONLY transient errors so SQS redrives;
-// permanent errors are swallowed (already stamped failed) so they don't churn to the DLQ.
+// Thin wrapper over WritebackService (the unit-tested seam): stamp errors 'failed', re-throw
+// only transient ones so SQS redrives; permanent errors are swallowed (already stamped).
 export async function handleWritebackJob(job: WritebackJob): Promise<void> {
   try {
     await writebackService.writeBack(job.batchFileId, {
@@ -28,14 +30,9 @@ export async function handleWritebackJob(job: WritebackJob): Promise<void> {
     const reason = err instanceof Error ? err.message : String(err);
     logger.error('Writeback: job failed', { batchFileId: job.batchFileId, error: reason });
 
-    // Best-effort failure recording. A separate try/catch — if this update itself
-    // fails (e.g. DB blip), we still want SQS to redrive.
-    //
-    // Use updateMany with a guard so we don't overwrite a successful terminal state.
-    // The service may have already stamped 'written' or 'skipped_stale' before a
-    // *later* statement threw — in that case the success record is the truth, and
-    // marking it 'failed' would be a false negative. Only stamp 'failed' if the
-    // current state is null or a previous 'failed'.
+    // Best-effort failure recording in its own try/catch (a DB blip here still lets SQS
+    // redrive). Guarded so we never overwrite a 'written'/'skipped_stale' the service may
+    // have stamped before a later statement threw — that would be a false negative.
     try {
       const batchFile = await prisma.batchFile.findUnique({
         where: { id: job.batchFileId },

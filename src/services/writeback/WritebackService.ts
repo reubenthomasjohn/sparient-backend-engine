@@ -2,20 +2,14 @@ import prisma from '../../db/client';
 import { SourceRegistry } from '../sources/SourceRegistry';
 import { logger } from '../../utils/logger';
 
-// Lease window for the in_progress claim. Must be longer than the worst-case worker
-// runtime (Lambda timeout 150s) and shorter than the queue visibility timeout (900s),
-// so a duplicate delivered while a worker is live is blocked, but a row stranded
-// in_progress by a crashed/timed-out worker is reclaimable on the next redrive.
+// Lease window for the in_progress claim: longer than worst-case worker runtime (Lambda
+// 150s), shorter than queue visibility (900s). Blocks live duplicates, but lets a crashed
+// worker's stranded row be reclaimed on the next redrive.
 const WRITEBACK_LEASE_MS = 600_000; // 10 min
 
-// Pushes a remediated PDF back into the source system (Canvas) for a single
-// batch_file. Eligibility is re-checked at the worker so an enqueued job that
-// has been superseded by a newer remediation cycle becomes a no-op.
-//
-// Idempotency: at-least-once delivery is fine. CanvasFileReplacer.replaceFile
-// uses on_duplicate=overwrite against the same file id; a duplicate run
-// re-uploads the same bytes. The post-write update of writebackState +
-// lastWritebackModifiedAt is also idempotent.
+// Pushes a remediated PDF back into Canvas for a single batch_file. Eligibility is
+// re-checked here so a job superseded by a newer cycle becomes a no-op. At-least-once
+// delivery is safe: replaceFile overwrites the same file id and the stamp is idempotent.
 export class WritebackService {
   async writeBack(
     batchFileId: string,
@@ -40,8 +34,7 @@ export class WritebackService {
     const { course } = sourceFile;
     const { institution } = course;
 
-    // Re-check eligibility under fresh DB state. The producer (RemediationService)
-    // already filtered, but state can change between enqueue and consume.
+    // Re-check eligibility under fresh DB state — it can change between enqueue and consume.
     if (
       batchFile.connectivoState !== 'completed' &&
       batchFile.connectivoState !== 'completed_with_warnings'
@@ -60,8 +53,8 @@ export class WritebackService {
       return;
     }
 
-    // ignoreOptIn is set by the user-driven replace endpoint: a manual click is
-    // explicit consent, so it bypasses the gate that governs *automatic* writeback.
+    // ignoreOptIn (user-driven replace): a manual click is explicit consent, bypassing
+    // the automatic-writeback opt-in gate.
     const optedIn = course.writebackOptIn ?? institution.writebackOptIn;
     if (!optedIn && !opts.ignoreOptIn) {
       logger.info('Writeback: skip — opt-out', { batchFileId, courseId: course.id });
@@ -79,24 +72,26 @@ export class WritebackService {
         sourceModifiedAt: batchFile.sourceModifiedAt,
         batchedModifiedAt: sourceFile.batchedModifiedAt,
       });
-      // A manual replace may have optimistically marked this 'queued'; a newer batch
-      // claimed the source_file before we ran. Resolve the lingering state so the
-      // UI's poll terminates.
+      // A manual replace optimistically marked this 'queued'; resolve it so the UI poll ends.
       await this.resolveQueued(sourceFile.id);
       return;
     }
 
-    // Lease-claim the source_file as in_progress before pushing to Canvas. A concurrent or
-    // duplicate SQS delivery finds it already in_progress (fresh lease) and skips, avoiding a
-    // double push. A lease older than WRITEBACK_LEASE_MS — left by a crashed/timed-out worker —
-    // is reclaimable so a redrive can still retry. Scoped to the exact version via batchedModifiedAt.
+    // Lease-claim as in_progress before pushing: a duplicate delivery finds a fresh lease and
+    // skips (no double push), while a stale lease from a crashed worker stays reclaimable.
     const now = new Date();
     const staleBefore = new Date(now.getTime() - WRITEBACK_LEASE_MS);
     const claim = await prisma.sourceFile.updateMany({
       where: {
         id: sourceFile.id,
         batchedModifiedAt: batchFile.sourceModifiedAt,
-        OR: [{ writebackState: { not: 'in_progress' } }, { writebackStartedAt: { lt: staleBefore } }],
+        // Claimable when not actively leased: non-in_progress state, OR null (Prisma's `not`
+        // doesn't match null, so list it explicitly), OR a stale lease from a crashed worker.
+        OR: [
+          { writebackState: { not: 'in_progress' } },
+          { writebackState: null },
+          { writebackStartedAt: { lt: staleBefore } },
+        ],
       },
       data: { writebackState: 'in_progress', writebackStartedAt: now },
     });
@@ -110,13 +105,9 @@ export class WritebackService {
 
     const sourceClient = await SourceRegistry.getClient(institution);
 
-    // The bytes are PDFs by contract — Connectivo's output format. Use that MIME
-    // explicitly rather than the source's mimeType, which may have been docx/pptx.
-    //
-    // knownModifiedAt is the version we *actually remediated* (batchFile.sourceModifiedAt),
-    // not discoveredModifiedAt. If a teacher edited the file in Canvas between batch
-    // creation and writeback, discoveredModifiedAt may have advanced past our remediated
-    // version — using it here would let us overwrite their newer edit with a stale PDF.
+    // Bytes are PDFs by contract (Connectivo output), so set MIME explicitly.
+    // knownModifiedAt is the version we actually remediated, not discoveredModifiedAt —
+    // using the latter could overwrite a teacher's newer Canvas edit with a stale PDF.
     const result = await sourceClient.replaceFile({
       fileExternalId: sourceFile.canvasFileId,
       knownModifiedAt: batchFile.sourceModifiedAt,
@@ -126,10 +117,8 @@ export class WritebackService {
     });
 
     if (result.status === 'skipped') {
-      // Same guard as the failure path: only stamp if no successful terminal state
-      // is already recorded for this source_file. Without this, a 'skipped' from
-      // *this* cycle would clobber a 'written' from a prior cycle whose Canvas-side
-      // timestamp legitimately sits beyond our knownModifiedAt.
+      // Only stamp if no successful terminal state exists — else a 'skipped' here would
+      // clobber a prior cycle's 'written' whose Canvas timestamp sits beyond knownModifiedAt.
       await prisma.sourceFile.updateMany({
         where: {
           id: sourceFile.id,
@@ -150,14 +139,9 @@ export class WritebackService {
       return;
     }
 
-    // Success: stamp the modifiedAt Canvas returned for the new upload. The
-    // FileChangeDetector consults this exact value to skip our own writebacks
-    // on the next discover pass.
-    //
-    // Guarded by batchedModifiedAt so a slow writer for an older batch doesn't
-    // clobber a newer batch's stamp backwards. A no-op here means a newer cycle
-    // already advanced past the version we just uploaded; the bytes are still in
-    // Canvas (replace is idempotent) but the bookkeeping is the newer cycle's.
+    // Stamp the modifiedAt Canvas returned; FileChangeDetector reads it to skip our own
+    // writebacks next discovery. Guarded by batchedModifiedAt so a slow writer for an older
+    // batch can't clobber a newer batch's stamp (a no-op just leaves the newer bookkeeping).
     const { count } = await prisma.sourceFile.updateMany({
       where: {
         id: sourceFile.id,
@@ -186,10 +170,8 @@ export class WritebackService {
     });
   }
 
-  // Resolves a lingering optimistic 'queued' stamp (set by the manual replace route)
-  // to a terminal state so the UI's poll always finishes. Called on every skip path
-  // that would otherwise return without stamping. Guarded to 'queued' so it never
-  // touches a terminal state — a no-op on the automatic writeback path.
+  // Resolve a lingering optimistic 'queued' stamp (manual replace route) to a terminal
+  // state so the UI poll finishes. Guarded to 'queued', so a no-op on the automatic path.
   private async resolveQueued(sourceFileId: string): Promise<void> {
     await prisma.sourceFile.updateMany({
       where: { id: sourceFileId, writebackState: 'queued' },

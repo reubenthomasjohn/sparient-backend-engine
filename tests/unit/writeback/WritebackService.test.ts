@@ -247,6 +247,26 @@ describe('WritebackService.writeBack', () => {
     expect(prismaMock.sourceFile.update).not.toHaveBeenCalled();
   });
 
+  it('lease-claim guard is NULL-inclusive so fresh (null-state) automatic writebacks can claim', async () => {
+    const sourceModifiedAt = new Date('2026-04-01T00:00:00Z');
+    prismaMock.batchFile.findUnique.mockResolvedValue(
+      batchFileWithRelations({
+        batchFile: { sourceModifiedAt },
+        sourceFile: { batchedModifiedAt: sourceModifiedAt, writebackState: null },
+      }) as any,
+    );
+    sourceClient.replaceFile.mockResolvedValue({ status: 'skipped', reason: 'modified' });
+
+    await service.writeBack('bf-1');
+
+    // First updateMany is the lease claim. Its OR MUST include { writebackState: null } —
+    // Prisma `not` excludes nulls, so without it a fresh automatic writeback never claims.
+    const claim = prismaMock.sourceFile.updateMany.mock.calls[0][0] as any;
+    expect(claim.data).toMatchObject({ writebackState: 'in_progress' });
+    expect(claim.where.OR).toEqual(expect.arrayContaining([{ writebackState: null }]));
+    expect(sourceClient.replaceFile).toHaveBeenCalled();
+  });
+
   it('skips the push when the in_progress lease is already held (claim count=0)', async () => {
     prismaMock.batchFile.findUnique.mockResolvedValue(batchFileWithRelations() as any);
     // The lease claim matches no rows — another worker holds a fresh lease.

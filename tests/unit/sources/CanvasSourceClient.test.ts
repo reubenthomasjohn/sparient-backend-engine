@@ -174,6 +174,16 @@ describe('CanvasSourceClient.getCourses — allowedTermIds override', () => {
   });
 });
 
+describe('CanvasSourceClient.countCourseFiles', () => {
+  it('returns the unfiltered file count (no content_types/date/flag params)', async () => {
+    mockedClient.getPaginated.mockResolvedValue([{}, {}, {}] as any);
+    const client = new CanvasSourceClient(makeInstitution());
+    expect(await client.countCourseFiles('123')).toBe(3);
+    // Called with just the path — no filtering params, so it counts every file.
+    expect(mockedClient.getPaginated).toHaveBeenCalledWith('/courses/123/files');
+  });
+});
+
 describe('CanvasSourceClient.getCourse — direct single-course fetch', () => {
   it('returns the mapped course (no listing/term filters applied)', async () => {
     mockedClient.getCourse.mockResolvedValue(course(99, { id: 2022437, name: 'Direct' }));

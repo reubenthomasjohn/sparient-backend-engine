@@ -22,9 +22,8 @@ import {
   getEffectiveSyncConfig,
 } from "../../sync/syncConfig";
 
-// The engine's course-state vocabulary -> Canvas's state[] enum on
-// /accounts/:id/courses. Canvas has NO "unpublished" state value (sending it
-// matches zero courses); pre-publish courses live in the created/claimed states.
+// Engine course-state vocabulary -> Canvas's state[] enum. Canvas has no "unpublished"
+// state (it matches zero courses); pre-publish courses are created/claimed.
 const CANVAS_STATE_MAP: Record<CourseState, string[]> = {
   available: ["available"],
   unpublished: ["created", "claimed"],
@@ -47,12 +46,8 @@ function extractExtension(filename: string): string {
 export class CanvasSourceClient implements ISourceClient {
   private readonly client: CanvasClient;
   private readonly replacer: CanvasFileReplacer;
-  // Resolved once per client instance from institution.syncConfig. When
-  // syncConfig is null, defaults are conservative — the 6 basic file types
-  // (pdf/docx/pptx/xlsx/jpg/png) and course states ['available','unpublished'].
-  // Anyone wanting more file types or stricter behavior PATCHes explicitly.
-  // The wider FILE_TYPE_REGISTRY (legacy Office, OpenDocument, more images,
-  // SVG, RTF, etc.) is the *available pool* — opt in via PATCH.
+  // Resolved once from institution.syncConfig. Null syncConfig -> conservative defaults
+  // (6 basic file types, states available/unpublished); widen the pool via explicit PATCH.
   private readonly syncConfig: EffectiveSyncConfig;
 
   constructor(institution: Institution) {
@@ -69,9 +64,7 @@ export class CanvasSourceClient implements ISourceClient {
   async getCourses(): Promise<DiscoveredCourse[]> {
     const useExplicitTerms = this.syncConfig.allowedTermIdSet.size > 0;
 
-    // Translate the engine's course-state vocabulary to Canvas's state[] enum.
-    // Critically, "unpublished" -> created/claimed; sending "unpublished" verbatim
-    // matches zero courses, so unpublished courses would never be discovered.
+    // Engine states -> Canvas state[] enum (see CANVAS_STATE_MAP).
     const canvasStates = [
       ...new Set(this.syncConfig.allowedCourseStates.flatMap((s) => CANVAS_STATE_MAP[s])),
     ];
@@ -85,11 +78,8 @@ export class CanvasSourceClient implements ISourceClient {
     });
 
     const [canvasCourses, terms] = await Promise.all([
-      // available = published; created/claimed = unpublished/draft. Both are syncable by
-      // default: teachers prepping next semester want files remediated before publish.
-      // `completed` (past terms) and `deleted` are excluded. Per-institution overrides come
-      // through syncConfig.allowedCourseStates. No enrollment_type filter — the
-      // account-courses endpoint should return every course in scope.
+      // Default states cover published + draft (teachers prep before publish); completed/
+      // deleted excluded. No enrollment_type filter — return every course in account scope.
       this.client.getPaginated<CanvasCourse>(
         `/accounts/${this.client.accountId}/courses`,
         { state: canvasStates },
@@ -97,9 +87,8 @@ export class CanvasSourceClient implements ISourceClient {
       this.client.getTerms(),
     ]);
 
-    // Term restriction. When syncConfig.allowedTermIds is set, sync EXACTLY those terms
-    // (even concluded ones) — explicit operator intent overrides the active-term heuristic.
-    // When empty (default), fall back to "all currently-active terms" (start/end straddle now).
+    // Explicit allowedTermIds sync exactly those terms (even concluded); empty falls back
+    // to all currently-active terms (start/end straddle now).
     const now = new Date();
     const includedTermIds = useExplicitTerms
       ? this.syncConfig.allowedTermIdSet
@@ -109,8 +98,7 @@ export class CanvasSourceClient implements ISourceClient {
       includedTermIds.has(c.enrollment_term_id?.toString()),
     );
 
-    // Per-institution exclude list — applied after the term filter so the
-    // logged "afterTermFilter" count remains comparable with prior behavior.
+    // Per-institution exclude list, applied after the term filter.
     const excludedCourseIds: string[] = [];
     const includedCourses = activeCourses.filter((c) => {
       if (this.syncConfig.excludedCourseIdSet.has(c.id.toString())) {
@@ -139,17 +127,14 @@ export class CanvasSourceClient implements ISourceClient {
     return includedCourses.map(toDiscoveredCourse);
   }
 
-  // Fetch ONE course directly by its Canvas id, bypassing the account listing and its
-  // term/state/exclude filters. Used by single-course sync (singleCourseId) so an explicit
-  // request always resolves the course even if it wouldn't appear in the account listing
-  // (e.g. a concluded term, or a course under a sub-account). Returns null if Canvas 404s.
+  // Fetch one course directly by id, bypassing the account listing's term/state/exclude
+  // filters. Used by single-course sync so an explicit request always resolves. Null on 404.
   async getCourse(courseExternalId: string): Promise<DiscoveredCourse | null> {
     const course = await this.client.getCourse(courseExternalId);
     return course ? toDiscoveredCourse(course) : null;
   }
 
-  // Unfiltered count of every file in the course — no content_types, date, size, or
-  // locked/hidden filtering. Paginates the full files listing and returns the count.
+  // Unfiltered count of every file in the course (paginates the full listing).
   async countCourseFiles(courseExternalId: string): Promise<number> {
     const all = await this.client.getPaginated<CanvasFile>(`/courses/${courseExternalId}/files`);
     return all.length;
@@ -184,11 +169,8 @@ export class CanvasSourceClient implements ISourceClient {
       ? allFiles.filter((f) => new Date(f.updated_at) >= lastSyncedAt)
       : allFiles;
 
-    // Per-stage filter with structured drop accounting. We log the Canvas
-    // file id (a stable handle) plus the lowercased extension instead of the
-    // filename — academic Canvas filenames frequently embed student PII
-    // (e.g. "doe_john_midterm.docx") and would land in CloudWatch at debug
-    // level. Operators can resolve a file id back via Canvas if needed.
+    // Per-stage filter with drop accounting. Log file id + extension, not filename —
+    // academic filenames embed student PII that would otherwise land in CloudWatch.
     const dropped: { canvasFileId: string; extension: string; reason: string }[] = [];
 
     const afterTypeFilter = afterDateFilter.filter((f) => {
@@ -236,9 +218,7 @@ export class CanvasSourceClient implements ISourceClient {
     });
 
     if (dropped.length > 0) {
-      // Cap to a reasonable preview to avoid pathological log lines on
-      // courses with thousands of dropped files. Full detail is per-file
-      // and only fires at debug level.
+      // Cap the preview so courses with thousands of drops don't blow up the log line.
       logger.debug("Canvas: files dropped by filter", {
         courseId: courseExternalId,
         sample: dropped.slice(0, 50),
@@ -255,12 +235,8 @@ export class CanvasSourceClient implements ISourceClient {
   ): Promise<DiscoveredFile | null> {
     try {
       const file = await this.client.getFile(fileExternalId);
-      // No filter re-check at refresh time. The type/locked/hidden/size
-      // gates were applied at discovery; once a SourceFile row exists we
-      // commit to it. Re-checking would conflate "file genuinely deleted
-      // from Canvas" with "config changed mid-flight" and incorrectly mark
-      // the row deleted in the latter case (the upload handler treats null
-      // as "file gone from Canvas").
+      // No filter re-check at refresh: gates were applied at discovery, and re-checking
+      // would conflate "deleted from Canvas" with "config changed" (null = file gone).
       return toDiscoveredFile(file);
     } catch (err) {
       // 404 = file deleted; null signals the caller to mark it deleted_from_source
@@ -285,9 +261,8 @@ export class CanvasSourceClient implements ISourceClient {
   private exceedsSizeCap(file: Pick<CanvasFile, "size">): boolean {
     const cap = this.syncConfig.maxFileSizeBytes;
     if (cap === null) return false;
-    // file.size arrives as a string (json-bigint storeAsString). Coerce, and
-    // include the file if size is missing/unparseable — open-by-default for
-    // Canvas API quirks rather than silently dropping normal files.
+    // file.size is a string (json-bigint). Coerce; include when missing/unparseable
+    // (open-by-default rather than silently dropping normal files).
     if (file.size == null) return false;
     const sizeNum = Number(file.size);
     if (!Number.isFinite(sizeNum)) return false;
