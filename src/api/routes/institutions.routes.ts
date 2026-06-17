@@ -7,6 +7,7 @@ import { logger } from '../../utils/logger';
 import { syncConfigSchema, syncConfigPatchSchema } from '../../services/sync/syncConfig';
 import { provisionInstitutionBucket } from '../../services/storage/InstitutionBucketService';
 import { getInstitutionBucketName } from '../../config/s3Bucket';
+import { encryptToken } from '../../services/crypto/credentialCrypto';
 
 const router = Router();
 
@@ -105,6 +106,12 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw Errors.badGateway('Failed to provision institution storage; please retry');
     }
 
+    // Encrypt the Canvas API token at rest (KMS). domain/account_id aren't secret.
+    const encryptedCredentials = {
+      ...data.credentials,
+      api_token: await encryptToken(data.credentials.api_token),
+    };
+
     let institution;
     try {
       institution = await prisma.institution.create({
@@ -112,7 +119,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
           name: data.name,
           slug: data.slug,
           sourceType: data.sourceType,
-          credentials: data.credentials,
+          credentials: encryptedCredentials,
           s3Bucket: bucketName,
           ...(data.writebackOptIn !== undefined && { writebackOptIn: data.writebackOptIn }),
           ...(data.syncEnabled !== undefined && { syncEnabled: data.syncEnabled }),

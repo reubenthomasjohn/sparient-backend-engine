@@ -32,7 +32,7 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
     return;
   }
 
-  const sourceClient = SourceRegistry.getClient(row.course.institution);
+  const sourceClient = await SourceRegistry.getClient(row.course.institution);
 
   // Refresh metadata right before download — Canvas pre-signed URLs expire quickly
   // and the URL captured at discovery time may have gone stale while the message sat in SQS.

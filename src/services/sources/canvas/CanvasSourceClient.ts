@@ -148,6 +148,13 @@ export class CanvasSourceClient implements ISourceClient {
     return course ? toDiscoveredCourse(course) : null;
   }
 
+  // Unfiltered count of every file in the course — no content_types, date, size, or
+  // locked/hidden filtering. Paginates the full files listing and returns the count.
+  async countCourseFiles(courseExternalId: string): Promise<number> {
+    const all = await this.client.getPaginated<CanvasFile>(`/courses/${courseExternalId}/files`);
+    return all.length;
+  }
+
   async getFiles(
     courseExternalId: string,
     lastSyncedAt: Date | null,

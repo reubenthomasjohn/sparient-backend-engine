@@ -47,6 +47,18 @@ module "ecr" {
   name_prefix = var.name_prefix
 }
 
+# --- KMS key for encrypting institution Canvas API tokens at rest ---
+resource "aws_kms_key" "credentials" {
+  description             = "${var.name_prefix} institution Canvas token encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+}
+
+resource "aws_kms_alias" "credentials" {
+  name          = "alias/${var.name_prefix}-credentials"
+  target_key_id = aws_kms_key.credentials.key_id
+}
+
 # --- Discovery queue (tick + institution fan-out) ---
 module "queues" {
   source      = "../../modules/queues"
@@ -164,6 +176,12 @@ data "aws_iam_policy_document" "lambda_runtime" {
     actions   = ["states:StartExecution"]
     resources = [aws_sfn_state_machine.course_workflow.arn]
   }
+
+  # KMS — encrypt/decrypt institution Canvas tokens
+  statement {
+    actions   = ["kms:Encrypt", "kms:Decrypt"]
+    resources = [aws_kms_key.credentials.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_runtime" {
@@ -190,6 +208,8 @@ locals {
     # Per-institution bucket prefix: <prefix>-<slug>. Includes the stage so prod and
     # dev never collide on a shared slug in this shared account. Must start "sparient-".
     INSTITUTION_BUCKET_PREFIX           = "${var.name_prefix}-accesshub"
+    # KMS key for encrypting institution Canvas tokens at rest.
+    CREDENTIALS_KMS_KEY_ID              = aws_kms_key.credentials.key_id
   }
 
   lambda_vpc_subnets = module.networking.private_subnet_ids
