@@ -445,6 +445,43 @@
             "description": "Deletes all courses, source files, batches, batch files, and issue categories for the institution. The institution row itself is preserved. Useful for resetting before a clean re-sync.",
             "url": "{{baseUrl}}/api/v1/institutions/{{institutionId}}/data"
           }
+        },
+        {
+          "name": "Replace file into Canvas (by Canvas ids)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Push a single remediated file back to Canvas, addressed purely by Canvas ids (institution UUID + Canvas course id + Canvas file id). The server resolves the latest completed remediation itself - no batch ids, no 'superseded' conflict.\n\nAsync: 202 + stamps writebackState='queued'; the worker performs the Canvas push and stamps the terminal state. Poll the file's writebackState for the outcome.\n\n404 institution/course/file unknown; 409 no completed remediation / no remediated output; 502 enqueue failed. No request body.",
+            "url": "{{baseUrl}}/api/v1/institutions/{{institutionId}}/courses/{{courseId}}/files/{{canvasFileId}}/replace"
+          }
+        },
+        {
+          "name": "Bulk replace files into Canvas",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Push many remediated files back to Canvas in one call (course-scoped). Provide an explicit canvasFileIds list (max 100), or omit/empty the body to target EVERY eligible file in the course (also capped at 100 - 400 if exceeded, pass a list).\n\nPartial success: each file is admitted independently. Returns 202 with accepted[] + rejected[{canvasFileId, code, reason}] whenever at least one file was queued; 422 when none were. The actual Canvas push happens later in the worker - poll writebackState.",
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"canvasFileIds\": [\"{{canvasFileId}}\"]\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/institutions/{{institutionId}}/courses/{{courseId}}/files/replace"
+          }
         }
       ]
     },
