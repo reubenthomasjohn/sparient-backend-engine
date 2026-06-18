@@ -286,6 +286,82 @@ Returns pending batches whose `request_written_at` is older than N hours — Con
 
 ---
 
+## Replace (push remediated files back to Canvas)
+
+These are the **external-facing** replace endpoints. Callers address files purely by Canvas ids — they never need our batch ids. The server always resolves the **latest completed remediation** for a file itself, so there is no "superseded by a newer batch" conflict to handle.
+
+Both are **asynchronous**: a successful call stamps `writebackState='queued'` and enqueues the work; the writeback worker performs the Canvas push later and stamps the terminal state (`written` | `skipped_stale` | `failed`). **An accepted file is *queued*, not yet written** — poll the file's `writebackState` for the final outcome.
+
+> The older, UI-oriented `POST /batches/:batchId/files/:batchFileId/replace` (replace one *specific* batch version) still exists and is unchanged.
+
+### Replace one file
+
+`POST /institutions/:institutionId/courses/:canvasCourseId/files/:canvasFileId/replace`
+
+- `:institutionId` — our internal institution UUID.
+- `:canvasCourseId`, `:canvasFileId` — Canvas's own ids.
+- No request body.
+
+**Response (202 Accepted):**
+
+```jsonc
+{ "success": true, "status": "queued", "canvasFileId": "12345" }
+```
+
+**Errors:**
+
+| Status | When |
+|--------|------|
+| `404`  | Institution, course, or file not found (course must be synced and the file discovered). |
+| `409`  | File has no completed remediation, or the completed remediation has no output to write back. |
+| `502`  | Failed to enqueue the writeback job (the optimistic `queued` stamp is rolled back). |
+
+### Bulk replace (course-scoped)
+
+`POST /institutions/:institutionId/courses/:canvasCourseId/files/replace`
+
+Replace many files in one course in a single call.
+
+**Request body:**
+
+```jsonc
+{
+  "canvasFileIds": ["12345", "67890"]   // explicit list, max 100
+                                        // OR omit / send {} -> every eligible file in the course
+}
+```
+
+- An explicit list longer than **100** → `400`.
+- Omitting the list targets every file in the course with a completed remediation; if that set exceeds **100**, the call `400`s and asks you to pass an explicit list (no silent truncation).
+
+**Response — partial success.** Each file is admitted independently, so one failure never blocks the rest:
+
+```jsonc
+{
+  "success": true,
+  "accepted": [
+    { "canvasFileId": "12345" }
+  ],
+  "rejected": [
+    { "canvasFileId": "67890", "code": "no_completed_remediation",
+      "reason": "File has no completed remediation to write back" },
+    { "canvasFileId": "99999", "code": "not_found",
+      "reason": "File not discovered in this course" }
+  ]
+}
+```
+
+| Status | When |
+|--------|------|
+| `202`  | At least one file was queued. Inspect `accepted` / `rejected` for the per-file breakdown. |
+| `422`  | Zero files were queued (every requested file was rejected); `success: false`, see `rejected`. |
+| `400`  | List exceeds 100, or "all eligible" expansion exceeds 100. |
+| `404`  | Institution or course not found. |
+
+**Per-file rejection `code`s:** `not_found`, `no_completed_remediation`, `no_remediated_output`, `enqueue_failed`.
+
+---
+
 ## Conventions
 
 - **Auth:** None on this branch. The endpoints are infra-trusted (CI / ops only). Any frontend will sit behind whatever auth layer the broader product team wires up.
