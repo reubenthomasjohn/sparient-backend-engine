@@ -2,14 +2,50 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import prisma from '../../db/client';
-import { Errors } from '../../utils/errors';
+import { AppError, Errors } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { syncConfigSchema, syncConfigPatchSchema } from '../../services/sync/syncConfig';
 import { provisionInstitutionBucket } from '../../services/storage/InstitutionBucketService';
 import { getInstitutionBucketName } from '../../config/s3Bucket';
 import { encryptToken } from '../../services/crypto/credentialCrypto';
+import {
+  enqueueReplaceForSourceFile,
+  findReplaceableSourceFiles,
+  ReplaceRejectionCode,
+} from '../../services/writeback/ReplaceService';
 
 const router = Router();
+
+// Max files a single bulk-replace call may act on — bounds the jobs one request can
+// enqueue. An explicit list longer than this 400s at the Zod layer; an unbounded
+// "all eligible in course" expansion past this also 400s (asks for an explicit list).
+const BULK_REPLACE_MAX = 100;
+
+// Rejection code -> HTTP status for the single-file replace endpoint. (Bulk reports
+// the same codes per-item inside a 202 body instead of as the response status.)
+const SINGLE_REPLACE_STATUS: Record<ReplaceRejectionCode, number> = {
+  not_found: 404,
+  no_completed_remediation: 409,
+  no_remediated_output: 409,
+  enqueue_failed: 502,
+};
+
+// Resolve (institutionId UUID, Canvas course id) -> internal course id, with precise
+// 404s. Shared by the single + bulk replace endpoints below.
+async function resolveCourseId(institutionId: string, canvasCourseId: string): Promise<string> {
+  const institution = await prisma.institution.findUnique({
+    where: { id: institutionId },
+    select: { id: true },
+  });
+  if (!institution) throw Errors.notFound('Institution');
+
+  const course = await prisma.course.findUnique({
+    where: { institutionId_canvasCourseId: { institutionId, canvasCourseId } },
+    select: { id: true },
+  });
+  if (!course) throw Errors.notFound('Course');
+  return course.id;
+}
 
 // Slug max length. The slug becomes part of the bucket name (<prefix>-<slug>, capped
 // at S3's 63 chars). The longest configured prefix is "sparient-prod-accesshub" (23) +
@@ -318,6 +354,133 @@ router.delete(
       logger.info('Institution data wiped', { institutionId, ...result });
 
       res.json({ success: true, institutionId, deleted: result });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// Body schema for bulk replace. Omitting canvasFileIds (or sending []) targets every
+// eligible file in the course; an explicit list is capped at BULK_REPLACE_MAX.
+const bulkReplaceSchema = z.object({
+  canvasFileIds: z.array(z.string().min(1)).max(BULK_REPLACE_MAX).optional(),
+});
+
+// POST /institutions/:institutionId/courses/:canvasCourseId/files/replace
+// Bulk "push remediated files back to Canvas". Async + partial-success: each file is
+// admitted independently, so one failure never blocks the rest. 202 with accepted[] +
+// rejected[{canvasFileId, code, reason}] whenever at least one file was queued; 422 when
+// none were. The actual Canvas push happens later in the worker — poll writebackState.
+router.post(
+  '/:institutionId/courses/:canvasCourseId/files/replace',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { institutionId, canvasCourseId } = req.params;
+
+      const parsed = bulkReplaceSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw Errors.badRequest(
+          parsed.error.issues
+            .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+            .join('; '),
+        );
+      }
+
+      const courseId = await resolveCourseId(institutionId, canvasCourseId);
+
+      const rejected: { canvasFileId: string; code: ReplaceRejectionCode; reason: string }[] = [];
+      let targets: { id: string; canvasFileId: string }[];
+
+      const requested = parsed.data.canvasFileIds;
+      if (requested && requested.length > 0) {
+        // Explicit list: resolve the ids that exist in this course; the rest are not_found.
+        const ids = [...new Set(requested)];
+        const found = await prisma.sourceFile.findMany({
+          where: { courseId, canvasFileId: { in: ids } },
+          select: { id: true, canvasFileId: true },
+        });
+        const sourceIdByCanvasId = new Map(found.map((f) => [f.canvasFileId, f.id]));
+        targets = [];
+        for (const canvasFileId of ids) {
+          const id = sourceIdByCanvasId.get(canvasFileId);
+          if (!id) {
+            rejected.push({
+              canvasFileId,
+              code: 'not_found',
+              reason: 'File not discovered in this course',
+            });
+            continue;
+          }
+          targets.push({ id, canvasFileId });
+        }
+      } else {
+        // No list: every eligible file in the course. Refuse rather than silently truncate
+        // when that exceeds the per-call cap.
+        targets = await findReplaceableSourceFiles(courseId);
+        if (targets.length > BULK_REPLACE_MAX) {
+          throw Errors.badRequest(
+            `More than ${BULK_REPLACE_MAX} eligible files in this course; pass an explicit ` +
+              `canvasFileIds list of at most ${BULK_REPLACE_MAX}`,
+          );
+        }
+      }
+
+      const accepted: { canvasFileId: string }[] = [];
+      for (const target of targets) {
+        const outcome = await enqueueReplaceForSourceFile(target.id);
+        if (outcome.status === 'accepted') {
+          accepted.push({ canvasFileId: target.canvasFileId });
+        } else {
+          rejected.push({
+            canvasFileId: target.canvasFileId,
+            code: outcome.code,
+            reason: outcome.reason,
+          });
+        }
+      }
+
+      logger.info('Bulk replace processed', {
+        institutionId,
+        canvasCourseId,
+        accepted: accepted.length,
+        rejected: rejected.length,
+      });
+
+      const anyAccepted = accepted.length > 0;
+      res.status(anyAccepted ? 202 : 422).json({ success: anyAccepted, accepted, rejected });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /institutions/:institutionId/courses/:canvasCourseId/files/:canvasFileId/replace
+// Push a single remediated file back to Canvas, addressed by Canvas ids only. The server
+// resolves the latest completed remediation itself, so callers never deal with batch ids
+// or a "superseded" conflict. Async: 202 + stamps writebackState='queued'; the worker does
+// the Canvas push and stamps the terminal state. Poll writebackState for the outcome.
+router.post(
+  '/:institutionId/courses/:canvasCourseId/files/:canvasFileId/replace',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { institutionId, canvasCourseId, canvasFileId } = req.params;
+
+      const courseId = await resolveCourseId(institutionId, canvasCourseId);
+      const sourceFile = await prisma.sourceFile.findUnique({
+        where: { courseId_canvasFileId: { courseId, canvasFileId } },
+        select: { id: true },
+      });
+      if (!sourceFile) throw Errors.notFound('File');
+
+      const outcome = await enqueueReplaceForSourceFile(sourceFile.id);
+      if (outcome.status === 'accepted') {
+        return res.status(202).json({ success: true, status: 'queued', canvasFileId });
+      }
+      throw new AppError(
+        outcome.reason,
+        SINGLE_REPLACE_STATUS[outcome.code],
+        outcome.code.toUpperCase(),
+      );
     } catch (err) {
       next(err);
     }
