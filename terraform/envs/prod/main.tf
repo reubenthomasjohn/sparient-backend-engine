@@ -88,7 +88,12 @@ resource "aws_sqs_queue" "responses" {
   })
 }
 
-# S3 → SQS policy: allow ANY sparient-* bucket to send notifications to the responses queue.
+# S3 → SQS policy: allow our own (sparient-*/accesshub-*) buckets plus externally-owned
+# institution buckets (csufit-infra-canvas-ati, in CSUF's account) to send response
+# notifications to the responses queue. Cross-account delivery is authorized purely by
+# this resource policy, so CSUF can then point their bucket notification at this queue.
+# SourceArn pins the exact (globally unique) bucket name, so no wildcard-spoofing risk.
+# NOTE: S3 → SQS requires the bucket to be in the SAME region as this queue (us-west-2).
 data "aws_iam_policy_document" "allow_s3_to_sqs" {
   statement {
     actions   = ["sqs:SendMessage"]
@@ -100,7 +105,11 @@ data "aws_iam_policy_document" "allow_s3_to_sqs" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:s3:::sparient-*", "arn:aws:s3:::accesshub-*"]
+      values = [
+        "arn:aws:s3:::sparient-*",
+        "arn:aws:s3:::accesshub-*",
+        "arn:aws:s3:::csufit-infra-canvas-ati",
+      ]
     }
   }
 }
@@ -171,6 +180,10 @@ data "aws_iam_policy_document" "lambda_runtime" {
     resources = ["arn:aws:s3:::sparient-*"]
   }
 
+  # Cross-account grants for externally-owned institution buckets (e.g. CSUF) live
+  # in their own files (csuf.tf) as separate inline role policies keyed off
+  # aws_iam_role.lambda_exec — keeps tenant-specific access out of the shared runtime.
+
   # Step Functions — discovery Lambda needs to start executions
   statement {
     actions   = ["states:StartExecution"]
@@ -207,10 +220,10 @@ locals {
     QUEUE_START_CONSUMERS               = "false"
     # Per-institution bucket prefix: <prefix>-<slug>. Includes the stage so prod and
     # dev never collide on a shared slug in this shared account. Must start "sparient-".
-    INSTITUTION_BUCKET_PREFIX           = "${var.name_prefix}-accesshub"
+    INSTITUTION_BUCKET_PREFIX = "${var.name_prefix}-accesshub"
     # KMS key for encrypting institution Canvas tokens at rest. Pass the alias (not the raw
     # key id) so a key rotation/replacement is picked up without a Lambda redeploy.
-    CREDENTIALS_KMS_KEY_ID              = aws_kms_alias.credentials.name
+    CREDENTIALS_KMS_KEY_ID = aws_kms_alias.credentials.name
   }
 
   lambda_vpc_subnets = module.networking.private_subnet_ids
