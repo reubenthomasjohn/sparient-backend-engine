@@ -88,7 +88,12 @@ resource "aws_sqs_queue" "responses" {
   })
 }
 
-# S3 → SQS policy: allow ANY sparient-* bucket to send notifications to the responses queue.
+# S3 → SQS policy: allow our own (sparient-*/accesshub-*) buckets plus externally-owned
+# institution buckets (csufit-infra-canvas-ati, in CSUF's account) to send response
+# notifications to the responses queue. Cross-account delivery is authorized purely by
+# this resource policy, so CSUF can then point their bucket notification at this queue.
+# SourceArn pins the exact (globally unique) bucket name, so no wildcard-spoofing risk.
+# NOTE: S3 → SQS requires the bucket to be in the SAME region as this queue (us-west-2).
 data "aws_iam_policy_document" "allow_s3_to_sqs" {
   statement {
     actions   = ["sqs:SendMessage"]
@@ -100,7 +105,11 @@ data "aws_iam_policy_document" "allow_s3_to_sqs" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:s3:::sparient-*", "arn:aws:s3:::accesshub-*"]
+      values = [
+        "arn:aws:s3:::sparient-*",
+        "arn:aws:s3:::accesshub-*",
+        "arn:aws:s3:::csufit-infra-canvas-ati",
+      ]
     }
   }
 }
