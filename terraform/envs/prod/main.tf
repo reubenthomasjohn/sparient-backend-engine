@@ -171,6 +171,10 @@ data "aws_iam_policy_document" "lambda_runtime" {
     resources = ["arn:aws:s3:::sparient-*"]
   }
 
+  # Cross-account grants for externally-owned institution buckets (e.g. CSUF) live
+  # in their own files (csuf.tf) as separate inline role policies keyed off
+  # aws_iam_role.lambda_exec — keeps tenant-specific access out of the shared runtime.
+
   # Step Functions — discovery Lambda needs to start executions
   statement {
     actions   = ["states:StartExecution"]
@@ -207,10 +211,10 @@ locals {
     QUEUE_START_CONSUMERS               = "false"
     # Per-institution bucket prefix: <prefix>-<slug>. Includes the stage so prod and
     # dev never collide on a shared slug in this shared account. Must start "sparient-".
-    INSTITUTION_BUCKET_PREFIX           = "${var.name_prefix}-accesshub"
+    INSTITUTION_BUCKET_PREFIX = "${var.name_prefix}-accesshub"
     # KMS key for encrypting institution Canvas tokens at rest. Pass the alias (not the raw
     # key id) so a key rotation/replacement is picked up without a Lambda redeploy.
-    CREDENTIALS_KMS_KEY_ID              = aws_kms_alias.credentials.name
+    CREDENTIALS_KMS_KEY_ID = aws_kms_alias.credentials.name
   }
 
   lambda_vpc_subnets = module.networking.private_subnet_ids
