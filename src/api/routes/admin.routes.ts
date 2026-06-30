@@ -28,7 +28,7 @@ router.post(
 
       const bucket = getBucketName(institutionId, institution.s3Bucket);
       const key = `${batchId}.json`;
-      await handleResponseJob({ bucket, key });
+      await handleResponseJob({ bucket, key, institutionId });
       res.json({ success: true, processed: { bucket, key } });
     } catch (err) {
       next(err);

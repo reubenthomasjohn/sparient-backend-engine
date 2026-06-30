@@ -4,6 +4,7 @@ import { prismaMock } from '../../setup';
 import {
   makeBatch,
   makeBatchFile,
+  makeInstitution,
   makeSourceFile,
 } from '../../fixtures';
 import {
@@ -30,6 +31,22 @@ describe('parseRemediatedPath', () => {
     ['/bucket/key.pdf', { bucket: 'bucket', key: 'key.pdf' }],
   ])('parses bucket + key: %s', (input, expected) => {
     expect(parseRemediatedPath(input)).toEqual(expected);
+  });
+
+  it('parses prefix-only remediated paths with institution context', () => {
+    const ctx = {
+      institutionBucket: 'csufit-infra-canvas-ati',
+      remediatedPrefix: 'connectivo-incoming-remediated',
+    };
+    expect(
+      parseRemediatedPath(
+        '/connectivo-incoming-remediated/3577535/282720663/v-1/file.docx',
+        ctx,
+      ),
+    ).toEqual({
+      bucket: 'csufit-infra-canvas-ati',
+      key: 'connectivo-incoming-remediated/3577535/282720663/v-1/file.docx',
+    });
   });
 
   it.each([
@@ -101,6 +118,17 @@ function stubTransactionMocks(opts: { responseCount?: number } = {}): void {
   prismaMock.$queryRaw.mockResolvedValue([] as any);
 }
 
+function batchWithInstitution(
+  batchOverrides: Parameters<typeof makeBatch>[0] = {},
+  batchFiles: any[] = [],
+) {
+  return {
+    ...makeBatch(batchOverrides),
+    institution: makeInstitution({ s3Bucket: 'sparient-int' }),
+    batchFiles,
+  };
+}
+
 // Shape that enqueueWritebacks's batch.findUnique expects.
 function batchForEnqueue(opts: {
   institutionOptIn?: boolean;
@@ -129,12 +157,11 @@ describe('RemediationService.handleResults', () => {
     const sourceModifiedAt = new Date('2026-04-01');
     prismaMock.batch.findUnique
       // initial batch fetch in handleResults
-      .mockResolvedValueOnce({
-        ...makeBatch({ status: 'pending' }),
-        batchFiles: [
+      .mockResolvedValueOnce(
+        batchWithInstitution({ status: 'pending' }, [
           { ...makeBatchFile({ sourceFileId: 'sf-1' }), sourceFile: makeSourceFile() },
-        ],
-      } as any)
+        ]),
+      )
       // post-tx enqueueWritebacks fetch — return an eligible file so the call
       // path through to writebackQueue.send is actually exercised.
       .mockResolvedValueOnce(
@@ -168,10 +195,7 @@ describe('RemediationService.handleResults', () => {
 
   it('falls into the crash-recovery branch on P2002 and still re-enqueues writebacks', async () => {
     prismaMock.batch.findUnique
-      .mockResolvedValueOnce({
-        ...makeBatch({ status: 'completed' }),
-        batchFiles: [],
-      } as any)
+      .mockResolvedValueOnce(batchWithInstitution({ status: 'completed' }, []))
       .mockResolvedValueOnce(
         batchForEnqueue({
           batchFiles: [
@@ -207,10 +231,7 @@ describe('RemediationService.handleResults', () => {
 
   it('swallows enqueueWritebacks errors in the crash-recovery branch (no DLQ loop)', async () => {
     prismaMock.batch.findUnique
-      .mockResolvedValueOnce({
-        ...makeBatch({ status: 'completed' }),
-        batchFiles: [],
-      } as any)
+      .mockResolvedValueOnce(batchWithInstitution({ status: 'completed' }, []))
       .mockResolvedValueOnce(
         batchForEnqueue({
           batchFiles: [

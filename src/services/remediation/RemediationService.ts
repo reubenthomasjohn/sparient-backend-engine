@@ -5,6 +5,8 @@ import { logger } from '../../utils/logger';
 import { Errors } from '../../utils/errors';
 import { computeFailureUpdate } from '../../utils/failure';
 import { writebackQueue } from '../../queue';
+import { getBucketName } from '../../config/s3Bucket';
+import { getEffectiveS3LayoutConfig } from '../../config/s3LayoutConfig';
 
 // Connectivo emits more state values than our Prisma enum. Anything not mapped
 // (and not "Processing", handled separately) is treated as failed — with a warn
@@ -37,12 +39,16 @@ class AlreadyProcessedError extends Error {
   }
 }
 
-// Connectivo reports remediated_path as "/<bucket>/<key>". Parse both pieces so
-// the writeback lookup doesn't depend on batch.requestS3Bucket (which is nullable
-// for legacy rows). Robust against malformed inputs: extra leading slashes,
-// missing bucket, and bucket-without-key. Exported for unit tests.
+// Connectivo reports remediated_path as "/<bucket>/<key>" or, for some tenants,
+// "/<remediatedPrefix>/..." without a bucket name. Exported for unit tests.
+export interface RemediatedPathContext {
+  institutionBucket: string;
+  remediatedPrefix: string;
+}
+
 export function parseRemediatedPath(
   path: string,
+  ctx?: RemediatedPathContext,
 ): { bucket: string; key: string } | null {
   const trimmed = path.replace(/^\/+/, '');
   const firstSlash = trimmed.indexOf('/');
@@ -50,13 +56,22 @@ export function parseRemediatedPath(
     logger.warn('RemediationService: remediated_path lacks bucket prefix', { path });
     return null;
   }
-  const bucket = trimmed.slice(0, firstSlash);
-  const key = trimmed.slice(firstSlash + 1);
-  if (bucket === '' || key === '') {
+  const firstSegment = trimmed.slice(0, firstSlash);
+  const rest = trimmed.slice(firstSlash + 1);
+
+  if (ctx && firstSegment === ctx.remediatedPrefix) {
+    if (rest === '') {
+      logger.warn('RemediationService: remediated_path missing key after prefix', { path });
+      return null;
+    }
+    return { bucket: ctx.institutionBucket, key: trimmed };
+  }
+
+  if (firstSegment === '' || rest === '') {
     logger.warn('RemediationService: remediated_path missing bucket or key', { path });
     return null;
   }
-  return { bucket, key };
+  return { bucket: firstSegment, key: rest };
 }
 
 export class RemediationService {
@@ -67,10 +82,19 @@ export class RemediationService {
   ): Promise<void> {
     const batch = await prisma.batch.findUnique({
       where: { id: batchId },
-      include: { batchFiles: { include: { sourceFile: true } } },
+      include: {
+        institution: true,
+        batchFiles: { include: { sourceFile: true } },
+      },
     });
 
     if (!batch) throw Errors.notFound('Batch');
+
+    const layout = getEffectiveS3LayoutConfig(batch.institution);
+    const remediatedPathCtx: RemediatedPathContext = {
+      institutionBucket: getBucketName(batch.institution.id, batch.institution.s3Bucket),
+      remediatedPrefix: layout.remediatedPrefix,
+    };
 
     // No early "already terminal" gate: dedup is enforced inside the tx via the
     // batch_responses unique constraint, and a follow-up response.json with a new
@@ -192,7 +216,7 @@ export class RemediationService {
           // which is nullable and not guaranteed to be the same bucket Connectivo
           // wrote to).
           const remediatedLocation = result.remediated_path
-            ? parseRemediatedPath(result.remediated_path)
+            ? parseRemediatedPath(result.remediated_path, remediatedPathCtx)
             : null;
           const remediatedS3Key = remediatedLocation?.key ?? null;
           const remediatedS3Bucket = remediatedLocation?.bucket ?? null;

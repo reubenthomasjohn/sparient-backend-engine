@@ -79,6 +79,10 @@ model Institution {
   // means "all defaults" — see src/services/sync/syncConfig.ts for the shape.
   syncConfig   Json?     @map("sync_config")
 
+  // Per-institution S3 subfolder prefixes within s3Bucket. Written in full at
+  // registration; null on legacy rows resolves to code defaults at read time.
+  s3LayoutConfig Json?   @map("s3_layout_config")
+
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 

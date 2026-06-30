@@ -2,45 +2,68 @@ import prisma from '../../db/client';
 import { s3Service } from '../../services/storage/S3Service';
 import { RemediationService } from '../../services/remediation/RemediationService';
 import { connectivoResultsSchema } from '../../types/connectivo';
-import { S3_PREFIX } from '../../config/s3Prefixes';
+import {
+  getEffectiveS3LayoutConfig,
+  resolveResponseObjectKey,
+} from '../../config/s3LayoutConfig';
+import { getBucketName } from '../../config/s3Bucket';
+import { Errors } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 
 const remediationService = new RemediationService();
 
 export interface ResponseJob {
   bucket: string;
-  key: string;       // key WITHOUT the responses prefix
+  // Full S3 object key from the event, or a bare "<filename>.json" for admin replay.
+  key: string;
+  /** When set, skip institution lookup by bucket (admin replay). */
+  institutionId?: string;
+}
+
+async function resolveLayoutForJob(job: ResponseJob) {
+  if (job.institutionId) {
+    const institution = await prisma.institution.findUnique({ where: { id: job.institutionId } });
+    if (!institution) throw Errors.notFound('Institution');
+    return {
+      layout: getEffectiveS3LayoutConfig(institution),
+      bucket: getBucketName(institution.id, institution.s3Bucket),
+    };
+  }
+
+  const institution = await prisma.institution.findFirst({
+    where: { s3Bucket: job.bucket },
+  });
+  if (!institution) {
+    throw new Error(`No institution registered for S3 bucket ${job.bucket}`);
+  }
+  return { layout: getEffectiveS3LayoutConfig(institution), bucket: job.bucket };
 }
 
 export async function handleResponseJob(job: ResponseJob): Promise<void> {
-  logger.info('Responses: fetching json', { bucket: job.bucket, key: job.key });
-  const raw = await s3Service.getJson<unknown>(job.bucket, S3_PREFIX.RESPONSES, job.key);
+  const { layout, bucket } = await resolveLayoutForJob(job);
+  const objectKey = resolveResponseObjectKey(job.key, layout.responsesPrefix);
 
-  // Strict schema validation. Connectivo no longer echoes request.json into this
-  // prefix, so any validation failure here is a real schema gap (or a stray file)
-  // — throw so the message lands in the DLQ rather than getting silently dropped.
+  logger.info('Responses: fetching json', { bucket, key: objectKey });
+  const raw = await s3Service.getJsonByKey<unknown>(bucket, objectKey);
+
   const result = connectivoResultsSchema.safeParse(raw);
   if (!result.success) {
     logger.error('Responses: schema validation failed', {
-      key: job.key,
+      key: objectKey,
       firstError: result.error.issues[0]?.message,
       issueCount: result.error.issues.length,
     });
     throw new Error(
-      `Connectivo response failed schema validation (key=${job.key}): ${result.error.issues[0]?.message}`,
+      `Connectivo response failed schema validation (key=${objectKey}): ${result.error.issues[0]?.message}`,
     );
   }
 
-  // Use external_batch_id from inside the payload (our batch ID) — don't parse from filename.
-  // Connectivo's filename format varies (e.g. <timestamp>_job_completed_<batchId>.json).
-  // Zod's z.string() accepts "" so we have to re-check here; throw on empty so the
-  // message hits the DLQ instead of being silently ACKed without ever updating a batch.
   const batchId = result.data.batch.external_batch_id;
   if (!batchId) {
-    logger.error('Responses: empty external_batch_id, routing to DLQ', { key: job.key });
-    throw new Error(`Connectivo response has empty external_batch_id (key=${job.key})`);
+    logger.error('Responses: empty external_batch_id, routing to DLQ', { key: objectKey });
+    throw new Error(`Connectivo response has empty external_batch_id (key=${objectKey})`);
   }
 
-  logger.info('Responses: processing', { batchId, key: job.key });
-  await remediationService.handleResults(batchId, result.data, job.key);
+  logger.info('Responses: processing', { batchId, key: objectKey });
+  await remediationService.handleResults(batchId, result.data, objectKey);
 }

@@ -15,6 +15,7 @@ vi.mock('../../../src/services/crypto/credentialCrypto', () => ({
 
 import app from '../../../src/app';
 import { provisionInstitutionBucket } from '../../../src/services/storage/InstitutionBucketService';
+import { getDefaultS3LayoutConfig } from '../../../src/config/s3LayoutConfig';
 
 const URL = '/api/v1/institutions';
 
@@ -44,6 +45,7 @@ function createdRow(overrides: Record<string, unknown> = {}) {
     syncEnabled: true,
     syncTime: '02:00',
     syncConfig: null,
+    s3LayoutConfig: getDefaultS3LayoutConfig(),
     lastSyncedAt: null,
     createdAt: new Date('2026-06-15T00:00:00Z'),
     updatedAt: new Date('2026-06-15T00:00:00Z'),
@@ -73,7 +75,11 @@ describe('POST /api/v1/institutions', () => {
     expect(provisionInstitutionBucket).toHaveBeenCalledWith(EXPECTED_BUCKET);
     expect(prismaMock.institution.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ slug: 'acme', s3Bucket: EXPECTED_BUCKET }),
+        data: expect.objectContaining({
+          slug: 'acme',
+          s3Bucket: EXPECTED_BUCKET,
+          s3LayoutConfig: getDefaultS3LayoutConfig(),
+        }),
       }),
     );
   });

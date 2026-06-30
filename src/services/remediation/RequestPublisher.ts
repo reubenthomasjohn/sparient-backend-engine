@@ -1,6 +1,6 @@
 import { Batch, BatchFile, Course, Institution, SourceFile } from '@prisma/client';
 import prisma from '../../db/client';
-import { S3_PREFIX } from '../../config/s3Prefixes';
+import { getEffectiveS3LayoutConfig } from '../../config/s3LayoutConfig';
 import { s3Service } from '../storage/S3Service';
 import { ConnectivoBatchPayload } from '../../types/connectivo';
 import { logger } from '../../utils/logger';
@@ -15,9 +15,10 @@ function toConnectivoPayload(
   course: Course,
   batchFiles: BatchFileWithSource[],
   s3Bucket: string,
+  sourcePrefix: string,
   forceReprocess: boolean,
 ): ConnectivoBatchPayload {
-  const folderPath = `${s3Bucket}/${S3_PREFIX.SOURCE}/${course.canvasCourseId}/`;
+  const folderPath = `${s3Bucket}/${sourcePrefix}/${course.canvasCourseId}/`;
 
   return {
     batch_id: batch.id,
@@ -57,15 +58,24 @@ export class RequestPublisher {
     });
 
     const key = this.buildKey(batch.id);
-    const payload = toConnectivoPayload(batch, institution, course, batchFiles, s3Bucket, forceReprocess);
+    const layout = getEffectiveS3LayoutConfig(institution);
+    const payload = toConnectivoPayload(
+      batch,
+      institution,
+      course,
+      batchFiles,
+      s3Bucket,
+      layout.sourcePrefix,
+      forceReprocess,
+    );
 
-    await s3Service.putJson(s3Bucket, S3_PREFIX.REQUESTS, key, payload);
+    await s3Service.putJson(s3Bucket, layout.requestsPrefix, key, payload);
 
     await prisma.batch.update({
       where: { id: batch.id },
       data: {
         requestS3Bucket: s3Bucket,
-        requestS3Key: `${S3_PREFIX.REQUESTS}/${key}`,
+        requestS3Key: `${layout.requestsPrefix}/${key}`,
         requestWrittenAt: new Date(),
       },
     });
