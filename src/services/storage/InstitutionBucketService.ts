@@ -5,7 +5,7 @@ import {
   PutBucketNotificationConfigurationCommand,
 } from '@aws-sdk/client-s3';
 import { config } from '../../config';
-import { S3_PREFIX } from '../../config/s3Prefixes';
+import { getDefaultS3LayoutConfig } from '../../config/s3LayoutConfig';
 import { logger } from '../../utils/logger';
 
 const s3 = new S3Client({ region: config.aws.region });
@@ -51,6 +51,7 @@ async function blockPublicAccess(bucketName: string): Promise<void> {
 async function configureResponseNotification(
   bucketName: string,
   sqsArn: string,
+  responsesPrefix: string,
 ): Promise<void> {
   await s3.send(new PutBucketNotificationConfigurationCommand({
     Bucket: bucketName,
@@ -62,7 +63,7 @@ async function configureResponseNotification(
           Filter: {
             Key: {
               FilterRules: [
-                { Name: 'prefix', Value: `${S3_PREFIX.RESPONSES}/` },
+                { Name: 'prefix', Value: `${responsesPrefix}/` },
                 { Name: 'suffix', Value: '.json' },
               ],
             },
@@ -80,8 +81,9 @@ export async function provisionInstitutionBucket(bucketName: string): Promise<st
 
   // SQS ARN for the responses queue — passed via env var from Terraform.
   const sqsArn = config.queue.responsesQueueArn;
+  const responsesPrefix = getDefaultS3LayoutConfig().responsesPrefix;
   if (sqsArn) {
-    await configureResponseNotification(bucketName, sqsArn);
+    await configureResponseNotification(bucketName, sqsArn, responsesPrefix);
   } else {
     logger.warn('InstitutionBucket: SQS_RESPONSES_QUEUE_ARN not set, skipping notification config');
   }

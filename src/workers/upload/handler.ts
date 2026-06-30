@@ -2,6 +2,7 @@ import prisma from '../../db/client';
 import { UploadJob } from '../../queue';
 import { SourceRegistry } from '../../services/sources/SourceRegistry';
 import { s3Service } from '../../services/storage/S3Service';
+import { getEffectiveS3LayoutConfig } from '../../config/s3LayoutConfig';
 import { computeFailureUpdate } from '../../utils/failure';
 import { logger } from '../../utils/logger';
 export async function handleUploadJob(job: UploadJob): Promise<void> {
@@ -103,7 +104,14 @@ export async function handleUploadJob(job: UploadJob): Promise<void> {
 
   try {
     const stream = await sourceClient.downloadFileStream(fresh.downloadUrl);
-    await s3Service.uploadSourceFileStream(job.s3Bucket, s3Key, stream, fresh.mimeType);
+    const layout = getEffectiveS3LayoutConfig(row.course.institution);
+    await s3Service.uploadSourceFileStream(
+      job.s3Bucket,
+      layout.sourcePrefix,
+      s3Key,
+      stream,
+      fresh.mimeType,
+    );
 
     // Strictly monotonic update — if a parallel worker with a newer modifiedAt already
     // advanced s3_source_modified_at, this no-ops rather than regressing the pointer.

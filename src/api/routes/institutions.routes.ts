@@ -5,6 +5,11 @@ import prisma from '../../db/client';
 import { AppError, Errors } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { syncConfigSchema, syncConfigPatchSchema } from '../../services/sync/syncConfig';
+import {
+  getDefaultS3LayoutConfig,
+  s3LayoutConfigSchema,
+  s3LayoutConfigPatchSchema,
+} from '../../config/s3LayoutConfig';
 import { provisionInstitutionBucket } from '../../services/storage/InstitutionBucketService';
 import { getInstitutionBucketName } from '../../config/s3Bucket';
 import { encryptToken } from '../../services/crypto/credentialCrypto';
@@ -74,6 +79,7 @@ const createInstitutionSchema = z.object({
   syncEnabled: z.boolean().optional(),
   syncTime: z.string().regex(/^\d{2}:\d{2}$/, 'syncTime must be HH:MM').optional(),
   syncConfig: syncConfigSchema.optional(),
+  s3LayoutConfig: s3LayoutConfigSchema.optional(),
 });
 
 // Columns returned to callers. Deliberately excludes `credentials` (Canvas API
@@ -88,6 +94,7 @@ const PUBLIC_INSTITUTION_SELECT = {
   syncEnabled: true,
   syncTime: true,
   syncConfig: true,
+  s3LayoutConfig: true,
   lastSyncedAt: true,
   createdAt: true,
   updatedAt: true,
@@ -161,6 +168,9 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
           ...(data.syncEnabled !== undefined && { syncEnabled: data.syncEnabled }),
           ...(data.syncTime !== undefined && { syncTime: data.syncTime }),
           ...(data.syncConfig !== undefined && { syncConfig: data.syncConfig }),
+          s3LayoutConfig: data.s3LayoutConfig
+            ? s3LayoutConfigSchema.parse({ ...getDefaultS3LayoutConfig(), ...data.s3LayoutConfig })
+            : getDefaultS3LayoutConfig(),
         },
         select: PUBLIC_INSTITUTION_SELECT,
       });
@@ -192,6 +202,7 @@ const updateInstitutionSchema = z.object({
   syncTime: z.string().regex(/^\d{2}:\d{2}$/, 'syncTime must be HH:MM').optional(),
   writebackOptIn: z.boolean().optional(),
   syncConfig: syncConfigPatchSchema.nullable().optional(),
+  s3LayoutConfig: s3LayoutConfigPatchSchema.nullable().optional(),
 });
 
 // PATCH /institutions/:institutionId
@@ -222,7 +233,7 @@ router.patch(
       // Also fetch current syncConfig — needed below to merge a partial update.
       const existing = await prisma.institution.findUnique({
         where: { id: institutionId },
-        select: { id: true, syncConfig: true },
+        select: { id: true, syncConfig: true, s3LayoutConfig: true },
       });
       if (!existing) throw Errors.notFound('Institution');
 
@@ -277,26 +288,51 @@ router.patch(
         updateData.syncConfig = validated.data;
       }
 
+      if (data.s3LayoutConfig === null) {
+        updateData.s3LayoutConfig = Prisma.DbNull;
+      } else if (data.s3LayoutConfig !== undefined) {
+        const existingLayoutRaw =
+          existing.s3LayoutConfig == null ||
+          typeof existing.s3LayoutConfig !== 'object' ||
+          Array.isArray(existing.s3LayoutConfig)
+            ? {}
+            : (existing.s3LayoutConfig as Record<string, unknown>);
+        const existingLayoutResult = s3LayoutConfigSchema.safeParse(existingLayoutRaw);
+        if (!existingLayoutResult.success) {
+          throw Errors.badRequest(
+            'Existing s3LayoutConfig has invalid values; PATCH { "s3LayoutConfig": null } first to reset, then re-apply your changes. ' +
+              `Issues: ${existingLayoutResult.error.issues
+                .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+                .join('; ')}`,
+          );
+        }
+
+        const layoutPatchEntries = Object.entries(data.s3LayoutConfig).filter(
+          ([, v]) => v !== undefined,
+        );
+        const mergedLayout = {
+          ...existingLayoutResult.data,
+          ...Object.fromEntries(layoutPatchEntries),
+        };
+
+        const validatedLayout = s3LayoutConfigSchema.safeParse(mergedLayout);
+        if (!validatedLayout.success) {
+          throw Errors.badRequest(
+            `Merged s3LayoutConfig failed validation: ${validatedLayout.error.issues
+              .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+              .join('; ')}`,
+          );
+        }
+        updateData.s3LayoutConfig = validatedLayout.data;
+      }
+
       // Explicit select — we never want to leak `credentials` (which holds
       // the Canvas API token) in any HTTP response. Mirror this in any future
       // GET /institutions endpoint.
       const updated = await prisma.institution.update({
         where: { id: institutionId },
         data: updateData,
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          sourceType: true,
-          writebackOptIn: true,
-          s3Bucket: true,
-          syncEnabled: true,
-          syncTime: true,
-          syncConfig: true,
-          lastSyncedAt: true,
-          createdAt: true,
-          updatedAt: true,
-        },
+        select: PUBLIC_INSTITUTION_SELECT,
       });
 
       logger.info('Institution updated', {

@@ -2,7 +2,6 @@ import { Readable } from 'stream';
 import { S3Client, HeadObjectCommand, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { config } from '../../config';
-import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 
 export interface SourceKeyParams {
@@ -21,8 +20,14 @@ class S3Service {
 
   // All methods take `bucket` as the first param — resolved by the caller via getBucketName().
 
-  async uploadSourceFileStream(bucket: string, key: string, body: Readable, mimeType: string): Promise<void> {
-    const fullKey = `${S3_PREFIX.SOURCE}/${key}`;
+  async uploadSourceFileStream(
+    bucket: string,
+    sourcePrefix: string,
+    key: string,
+    body: Readable,
+    mimeType: string,
+  ): Promise<void> {
+    const fullKey = `${sourcePrefix}/${key}`;
     logger.debug('S3: streaming source file', { bucket, key: fullKey });
 
     await new Upload({
@@ -60,9 +65,12 @@ class S3Service {
   }
 
   async getJson<T>(bucket: string, prefix: string, key: string): Promise<T> {
-    const fullKey = `${prefix}/${key}`;
-    const r = await this.client.send(new GetObjectCommand({ Bucket: bucket, Key: fullKey }));
-    if (!r.Body) throw new Error(`S3 GetObject returned no body for key ${fullKey}`);
+    return this.getJsonByKey<T>(bucket, `${prefix}/${key}`);
+  }
+
+  async getJsonByKey<T>(bucket: string, key: string): Promise<T> {
+    const r = await this.client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if (!r.Body) throw new Error(`S3 GetObject returned no body for key ${key}`);
     const text = await r.Body.transformToString();
     return JSON.parse(text) as T;
   }

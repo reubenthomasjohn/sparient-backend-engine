@@ -22,6 +22,7 @@ export function makeInstitution(overrides: Partial<Institution> = {}): Instituti
     syncTime: '02:00',
     lastSyncedAt: null,
     syncConfig: null,
+    s3LayoutConfig: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
     ...overrides,

@@ -1,6 +1,5 @@
 import type { SQSEvent, SQSBatchResponse, SQSBatchItemFailure } from 'aws-lambda';
 import { handleResponseJob } from './handler';
-import { S3_PREFIX } from '../../config/s3Prefixes';
 import { logger } from '../../utils/logger';
 
 interface S3EventRecord {
@@ -17,14 +16,10 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
     try {
       const s3Event = JSON.parse(record.body) as S3Event;
       for (const r of s3Event.Records) {
-        const fullKey = decodeURIComponent(r.s3.object.key.replace(/\+/g, ' '));
-        const prefixWithSlash = `${S3_PREFIX.RESPONSES}/`;
-        const key = fullKey.startsWith(prefixWithSlash)
-          ? fullKey.slice(prefixWithSlash.length)
-          : fullKey;
+        const key = decodeURIComponent(r.s3.object.key.replace(/\+/g, ' '));
 
         await handleResponseJob({
-          bucket: r.s3.bucket.name,  // actual bucket from S3 event (per-institution)
+          bucket: r.s3.bucket.name,
           key,
         });
       }
